@@ -30,6 +30,12 @@ class HealthHub extends IPSModule
     private const CONSOLIDATE_TIME = '00:10:00';
     private const CONSOLIDATE_DAYS = 3;
 
+    /** Housekeeping timer interval (s) while something is pending. */
+    private const PENDING_INTERVAL = 20;
+    /** Initial-value purge: search window around logging start (s), and how long to keep looking (s). */
+    private const PURGE_WINDOW = 120;
+    private const PURGE_KEEP = 180;
+
     /**
      * Daily variables: ident => [type, name, profile, position]
      * type: 1 = integer, 2 = float. All of them are archived (aggregation "Standard").
@@ -76,7 +82,12 @@ class HealthHub extends IPSModule
         $this->RegisterPropertyFloat('StartBodyFat', 21.4);
         $this->RegisterPropertyFloat('StartLeanMass', 58.2);
 
+        // --- internal queues (archive housekeeping) ---
+        $this->RegisterAttributeString('PendingReaggregate', '[]');  // [varId, ...]
+        $this->RegisterAttributeString('PendingPurge', '[]');        // [{id, ts}, ...]
+
         $this->RegisterTimer('Consolidate', 0, 'HH_Consolidate($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('Pending', 0, 'HH_ProcessPending($_IPS[\'TARGET\']);');
     }
 
     public function ApplyChanges()
@@ -116,6 +127,7 @@ class HealthHub extends IPSModule
             $this->RegisterMessage(0, IPS_KERNELSTARTED);
         }
         $this->scheduleConsolidation();
+        $this->updatePendingTimer();
         $this->SetStatus(IS_ACTIVE);
     }
 
@@ -173,7 +185,8 @@ class HealthHub extends IPSModule
             return;
         }
         $clock = $this->clock();
-        $writer = new HHArchiveWriter(new HHIpsArchiveBackend($archiveId), $clock);
+        $backend = $this->backend($archiveId);
+        $writer = new HHArchiveWriter($backend, $clock);
         $changed = 0;
         foreach (array_keys(self::DAILY_VARS) as $ident) {
             $varId = $this->GetIDForIdent($ident);
@@ -185,10 +198,60 @@ class HealthHub extends IPSModule
                 }
             }
             if ($varChanged) {
-                AC_ReAggregateVariable($archiveId, $varId);
+                $backend->reAggregateVariable($varId);
             }
         }
         $this->SendDebug('Consolidate', $changed . ' day(s) normalised', 0);
+    }
+
+    /**
+     * Timer target: archive housekeeping that cannot be done immediately.
+     *  - removes the 0 entry IPS logs when logging is switched on for a variable
+     *    (it would otherwise look like a real "0 kcal" day)
+     *  - retries re-aggregations that failed because another aggregation was running
+     */
+    public function ProcessPending(): void
+    {
+        $archiveId = $this->archiveId();
+        if ($archiveId === 0) {
+            $this->SetTimerInterval('Pending', 0);
+            return;
+        }
+        $backend = $this->backend($archiveId);
+        $now = time();
+
+        $keep = [];
+        foreach (json_decode($this->ReadAttributeString('PendingPurge'), true) ?: [] as $item) {
+            $varId = (int) $item['id'];
+            $ts = (int) $item['ts'];
+            if (!IPS_VariableExists($varId)) {
+                continue;
+            }
+            $removed = 0;
+            foreach ($backend->getLoggedValues($varId, $ts - self::PURGE_WINDOW, $ts + self::PURGE_WINDOW) as $row) {
+                if ((float) $row['Value'] == 0.0) {
+                    $backend->deleteVariableData($varId, (int) $row['TimeStamp'], (int) $row['TimeStamp']);
+                    $removed++;
+                }
+            }
+            if ($removed > 0) {
+                $this->SendDebug('Purge', IPS_GetName($varId) . ': ' . $removed . ' initial entry/entries removed', 0);
+                $this->queueReaggregate($varId);
+            }
+            if ($now < $ts + self::PURGE_KEEP) {
+                $keep[] = $item; // the archive may log the initial value with a delay
+            }
+        }
+        $this->WriteAttributeString('PendingPurge', json_encode($keep));
+
+        $ids = json_decode($this->ReadAttributeString('PendingReaggregate'), true) ?: [];
+        $this->WriteAttributeString('PendingReaggregate', '[]');
+        foreach ($ids as $varId) {
+            if (IPS_VariableExists((int) $varId)) {
+                $backend->reAggregateVariable((int) $varId); // re-queues itself on failure
+            }
+        }
+        $this->updatePendingTimer();
     }
 
     /**
@@ -207,11 +270,12 @@ class HealthHub extends IPSModule
         $this->RegisterVariableFloat($ident, 'Archive self test', '', 999);
         $varId = $this->GetIDForIdent($ident);
         IPS_SetHidden($varId, true);
+        $enabledAt = time();
         AC_SetLoggingStatus($archiveId, $varId, true);
         AC_SetAggregationType($archiveId, $varId, 0);
         IPS_ApplyChanges($archiveId);
 
-        $backend = new HHIpsArchiveBackend($archiveId);
+        $backend = new HHIpsArchiveBackend($archiveId); // no retry queue for the temporary variable
         $writer = new HHArchiveWriter($backend, $clock);
         $today = $clock->today();
         $past = $clock->addDays($today, -2);
@@ -235,10 +299,18 @@ class HealthHub extends IPSModule
         };
 
         try {
+            // 0) IPS logs the current value when logging is switched on
+            $settle();
+            $initial = $backend->getLoggedValues($varId, $enabledAt - 10, time() + 10);
+            $lines[] = 'INFO entries logged when logging was switched on: ' . $describe($initial)
+                . (count($initial) > 0 ? ' -> removed automatically for daily variables' : '');
+            $backend->deleteVariableData($varId, 0, time() + 86400);
+
             // 1) raw IPS behaviour: SetValue + AC_AddLoggedValues on the same day
+            //    (timestamp before the SetValue entry - IPS rejects newer than unwritten data)
             SetValue($varId, 42.0);
             $settle();
-            AC_AddLoggedValues($archiveId, $varId, [['TimeStamp' => min($clock->noon($today), time()), 'Value' => 42.0]]);
+            $backend->addLoggedValues($varId, [['TimeStamp' => $todayStart + 60, 'Value' => 42.0]]);
             $raw = $backend->getLoggedValues($varId, $todayStart, $todayEnd);
             $lines[] = 'INFO raw SetValue + AC_AddLoggedValues today: ' . $describe($raw)
                 . (count($raw) > 1 ? ' -> duplicate, as expected (why the writer avoids it)' : '');
@@ -300,10 +372,34 @@ class HealthHub extends IPSModule
                 $values[$day] = $type === 1 ? (int) round((float) $v) : (float) $v;
             }
         }
-        $writer = new HHArchiveWriter(new HHIpsArchiveBackend($archiveId), $this->clock());
+        $writer = new HHArchiveWriter($this->backend($archiveId), $this->clock());
         $stats = $writer->writeDays($this->GetIDForIdent($ident), $values);
         $this->SendDebug('Write ' . $ident, json_encode($values) . ' -> ' . json_encode($stats), 0);
         return $stats;
+    }
+
+    private function backend(int $archiveId): HHIpsArchiveBackend
+    {
+        return new HHIpsArchiveBackend($archiveId, function (int $varId) {
+            $this->queueReaggregate($varId);
+        });
+    }
+
+    private function queueReaggregate(int $varId): void
+    {
+        $ids = json_decode($this->ReadAttributeString('PendingReaggregate'), true) ?: [];
+        if (!in_array($varId, $ids, true)) {
+            $ids[] = $varId;
+            $this->WriteAttributeString('PendingReaggregate', json_encode($ids));
+        }
+        $this->updatePendingTimer();
+    }
+
+    private function updatePendingTimer(): void
+    {
+        $pending = count(json_decode($this->ReadAttributeString('PendingReaggregate'), true) ?: [])
+            + count(json_decode($this->ReadAttributeString('PendingPurge'), true) ?: []);
+        $this->SetTimerInterval('Pending', $pending > 0 ? self::PENDING_INTERVAL * 1000 : 0);
     }
 
     private function clock(): HHDayClock
@@ -335,18 +431,25 @@ class HealthHub extends IPSModule
     private function enableArchiving(): void
     {
         $archiveId = $this->archiveId();
-        $changed = false;
+        $enabled = [];
         foreach (array_keys(self::DAILY_VARS) as $ident) {
             $varId = $this->GetIDForIdent($ident);
             if (!AC_GetLoggingStatus($archiveId, $varId)) {
                 AC_SetLoggingStatus($archiveId, $varId, true);
                 AC_SetAggregationType($archiveId, $varId, 0);
-                $changed = true;
+                $enabled[] = $varId;
             }
         }
-        if ($changed) {
+        if (count($enabled) > 0) {
             IPS_ApplyChanges($archiveId);
-            $this->SendDebug('Archive', 'Logging enabled for daily variables', 0);
+            // IPS logs the current value (0) when logging starts -> remove it shortly after
+            $purge = json_decode($this->ReadAttributeString('PendingPurge'), true) ?: [];
+            foreach ($enabled as $varId) {
+                $purge[] = ['id' => $varId, 'ts' => time()];
+            }
+            $this->WriteAttributeString('PendingPurge', json_encode($purge));
+            $this->updatePendingTimer();
+            $this->SendDebug('Archive', 'Logging enabled for ' . count($enabled) . ' daily variable(s)', 0);
         }
     }
 

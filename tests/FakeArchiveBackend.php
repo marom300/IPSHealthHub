@@ -41,8 +41,16 @@ class FakeArchiveBackend implements HHArchiveBackend
         }));
     }
 
+    /** @var int|null mimics IPS: reject timestamps >= this (newer than unwritten buffer data) */
+    public $rejectAddFrom = null;
+
     public function addLoggedValues(int $varId, array $values): void
     {
+        foreach ($values as $v) {
+            if ($this->rejectAddFrom !== null && (int) $v['TimeStamp'] >= $this->rejectAddFrom) {
+                throw new RuntimeException('newer than unwritten data');
+            }
+        }
         $this->calls[] = 'add';
         foreach ($values as $v) {
             $this->rows[$varId][] = ['TimeStamp' => (int) $v['TimeStamp'], 'Value' => $v['Value']];

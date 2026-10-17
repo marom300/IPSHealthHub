@@ -154,6 +154,16 @@ final class ArchiveWriterTest extends TestCase
         $this->assertSame($this->clock->noon('2026-10-17'), $this->rowsOf('2026-10-17')[0]['TimeStamp']);
     }
 
+    public function testTodayFallsBackToDayStartWhenIpsRejectsTimestamp(): void
+    {
+        $this->backend->values[self::VAR] = 85.0;
+        $this->backend->rejectAddFrom = $this->now - 30; // unwritten SetValue entry 30 s ago
+        $this->writer->writeDay(self::VAR, '2026-10-17', 85.0);
+        $rows = $this->rowsOf('2026-10-17');
+        $this->assertCount(1, $rows);
+        $this->assertSame($this->clock->dayRange('2026-10-17')[0], $rows[0]['TimeStamp']);
+    }
+
     public function testTodayDuplicateWithSameValueIsCollapsed(): void
     {
         $this->backend->values[self::VAR] = 85.0;

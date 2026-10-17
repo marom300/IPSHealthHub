@@ -59,6 +59,12 @@ Pro Variable und Tag steht **genau ein** Archivwert im Archiv. Abgeschlossene Ta
 
 Der heutige Eintrag trägt dadurch die Schreibzeit statt 12:00. Der Timer **Konsolidieren** (täglich 00:10) schiebt die letzten 3 abgeschlossenen Tage auf genau einen Eintrag um 12:00 (der letzte Wert des Tages gewinnt). Leser (MCP, ab Phase 4) nehmen immer den **letzten Eintrag eines Tages**, ein seltener Restduplikat-Eintrag vor der Konsolidierung stört also nicht.
 
+**Verhalten von IPS, das das Modul abfängt** (am echten System mit dem Selbsttest bestätigt):
+
+- **Logging einschalten loggt den aktuellen Wert.** Wird das Archiv für eine Variable aktiviert, schreibt IPS sofort deren Wert (0) mit. Für Tagesvariablen wäre das ein falscher „0-kcal-Tag“. Das Modul entfernt diese 0-Einträge rund um den Aktivierungszeitpunkt automatisch (Timer *Pending*, ca. 3 Minuten lang alle 20 s).
+- **`AC_AddLoggedValues` lehnt Zeitstempel ab, die neuer sind als noch nicht geschriebene Pufferdaten.** Der Heute-Pfad weicht dann auf 00:00 des Tages aus, die Konsolidierung setzt den Wert nachts auf 12:00.
+- **`AC_ReAggregateVariable` schlägt fehl, solange eine andere Aggregation läuft.** Das Modul merkt sich die Variable und wiederholt die Aggregation alle 20 s, bis sie klappt.
+
 `null` als Tageswert **löscht** den Tag: ein FDDB-Tag ohne Einträge ist kein 0-kcal-Tag. Zukünftige Tage werden abgewiesen.
 
 **Hinweis zu IPSView-Diagrammen:** Mittelt die Archiv-Aggregation *Standard* zeitgewichtet (noch am echten System zu prüfen), enthält ein Tagesbalken bis 12:00 noch den Vortageswert. Für exakte Tageswerte im Diagramm die Darstellung *Linie/Punkte auf Rohwerten* nutzen. Der MCP-Server liest immer die Rohwerte.
@@ -108,6 +114,7 @@ Erlaubt sind 30–250 cm, keine Zukunftsdaten. Ein erneuter Eintrag für denselb
 |---|---|
 | `HH_SetWaist(int $InstanceID, float $cm, string $date = ''): bool` | Bauchumfang für einen Tag speichern. |
 | `HH_Consolidate(int $InstanceID)` | Letzte 3 abgeschlossene Tage aller Tagesvariablen auf genau einen 12:00-Eintrag normalisieren (läuft automatisch täglich 00:10). |
+| `HH_ProcessPending(int $InstanceID)` | Interner Timer: entfernt die 0-Einträge beim Logging-Start und wiederholt fehlgeschlagene Re-Aggregationen. Läuft nur, solange etwas ansteht. |
 | `HH_SelfTestArchive(int $InstanceID): string` | Prüft die Schreibstrategie auf diesem System mit einer temporären, versteckten Variable und liefert einen Bericht. Zeigt auch das Roh-Verhalten von `SetValue` + `AC_AddLoggedValues`. Startet das Archiv zweimal neu (Logging an/aus), daher nicht im laufenden Betrieb dauernd ausführen. |
 
 ## Entwicklung / Tests

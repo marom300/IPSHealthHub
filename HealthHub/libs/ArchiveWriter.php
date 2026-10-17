@@ -210,7 +210,13 @@ class HHArchiveWriter
                 $this->backend->deleteVariableData($varId, $start, $end);
             }
             $ts = min($this->clock->noon($this->clock->today()), $this->clock->now());
-            $this->backend->addLoggedValues($varId, [['TimeStamp' => $ts, 'Value' => $value]]);
+            try {
+                $this->backend->addLoggedValues($varId, [['TimeStamp' => $ts, 'Value' => $value]]);
+            } catch (RuntimeException $e) {
+                // IPS rejects timestamps newer than still unwritten buffer entries;
+                // the start of the day is always older. Consolidation moves it to 12:00 later.
+                $this->backend->addLoggedValues($varId, [['TimeStamp' => $start, 'Value' => $value]]);
+            }
             return 'written';
         }
 
@@ -238,9 +244,13 @@ class HHIpsArchiveBackend implements HHArchiveBackend
     /** @var int */
     private $archiveId;
 
-    public function __construct(int $archiveId)
+    /** @var callable|null called with the variable ID if a re-aggregation could not be started */
+    private $onReaggregateFailed;
+
+    public function __construct(int $archiveId, ?callable $onReaggregateFailed = null)
     {
         $this->archiveId = $archiveId;
+        $this->onReaggregateFailed = $onReaggregateFailed;
     }
 
     public function getLoggedValues(int $varId, int $start, int $end): array
@@ -277,14 +287,18 @@ class HHIpsArchiveBackend implements HHArchiveBackend
 
     public function addLoggedValues(int $varId, array $values): void
     {
-        if (!AC_AddLoggedValues($this->archiveId, $varId, $values)) {
+        // fails if a timestamp is newer than values still waiting in the archive's write buffer
+        if (!@AC_AddLoggedValues($this->archiveId, $varId, $values)) {
             throw new RuntimeException('AC_AddLoggedValues failed for variable ' . $varId);
         }
     }
 
     public function reAggregateVariable(int $varId): void
     {
-        AC_ReAggregateVariable($this->archiveId, $varId);
+        // fails (with a warning) while another aggregation is running -> retry later
+        if (!@AC_ReAggregateVariable($this->archiveId, $varId) && $this->onReaggregateFailed !== null) {
+            ($this->onReaggregateFailed)($varId);
+        }
     }
 
     public function getVariableValue(int $varId)
