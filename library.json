@@ -1,0 +1,14 @@
+{
+    "id": "{35688F2E-D8E0-46A8-A250-E520847E2902}",
+    "author": "marom300",
+    "name": "HealthHub",
+    "title": "HealthHub",
+    "description": "Collects daily health and nutrition values (FDDB, Fitdays/Google Health via Health Connect) into archived variables and exposes them read-only to Claude via an integrated MCP server.",
+    "url": "",
+    "version": "0.1",
+    "build": 1,
+    "date": 1792195200,
+    "compatibility": {
+        "minIPS": "7.0"
+    }
+}

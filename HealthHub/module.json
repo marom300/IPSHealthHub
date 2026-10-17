@@ -1,0 +1,13 @@
+{
+    "id": "{F80690FB-1305-42C4-B879-4F8E8C5B0858}",
+    "name": "HealthHub",
+    "type": 3,
+    "vendor": "",
+    "aliases": [
+        "HealthHub"
+    ],
+    "parentRequirements": [],
+    "childRequirements": [],
+    "implemented": [],
+    "prefix": "HH"
+}

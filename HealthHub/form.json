@@ -1,0 +1,95 @@
+{
+    "elements": [
+        {
+            "type": "ExpansionPanel",
+            "caption": "General",
+            "expanded": true,
+            "items": [
+                {
+                    "type": "SelectInstance",
+                    "name": "ArchiveID",
+                    "caption": "Archive instance (none = first Archive Control)",
+                    "validModules": ["{43192F0B-135B-4CE7-A0A7-1475603F3060}"]
+                },
+                {
+                    "type": "ValidationTextBox",
+                    "name": "TimeZone",
+                    "caption": "Time zone (day boundaries)",
+                    "validate": "^[A-Za-z_]+(/[A-Za-z_+\\-0-9]+)*$"
+                },
+                {
+                    "type": "CheckBox",
+                    "name": "DebugMode",
+                    "caption": "Debug mode (raw payloads into debug window / files, from phase 2)"
+                }
+            ]
+        },
+        {
+            "type": "ExpansionPanel",
+            "caption": "Goals",
+            "items": [
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        { "type": "NumberSpinner", "name": "KcalTarget", "caption": "Calorie target", "suffix": " kcal", "minimum": 800, "maximum": 5000 },
+                        { "type": "NumberSpinner", "name": "ProteinTarget", "caption": "Protein target", "suffix": " g", "minimum": 0, "maximum": 400 },
+                        { "type": "NumberSpinner", "name": "FatTarget", "caption": "Fat target", "suffix": " g", "minimum": 0, "maximum": 300 }
+                    ]
+                },
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        { "type": "NumberSpinner", "name": "PaceMin", "caption": "Target pace from", "suffix": " kg/week", "digits": 2, "minimum": -2, "maximum": 2 },
+                        { "type": "NumberSpinner", "name": "PaceMax", "caption": "to", "suffix": " kg/week", "digits": 2, "minimum": -2, "maximum": 2 }
+                    ]
+                },
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        { "type": "ValidationTextBox", "name": "StartDate", "caption": "Start date (YYYY-MM-DD)", "validate": "^\\d{4}-\\d{2}-\\d{2}$" },
+                        { "type": "NumberSpinner", "name": "StartWeight", "caption": "Start weight", "suffix": " kg", "digits": 1, "minimum": 0, "maximum": 300 },
+                        { "type": "NumberSpinner", "name": "StartBodyFat", "caption": "Start body fat", "suffix": " %", "digits": 1, "minimum": 0, "maximum": 70 },
+                        { "type": "NumberSpinner", "name": "StartLeanMass", "caption": "Start lean mass", "suffix": " kg", "digits": 1, "minimum": 0, "maximum": 200 }
+                    ]
+                }
+            ]
+        }
+    ],
+    "actions": [
+        {
+            "type": "ExpansionPanel",
+            "caption": "Waist circumference",
+            "items": [
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        { "type": "NumberSpinner", "name": "WaistValue", "caption": "Waist", "suffix": " cm", "digits": 1, "minimum": 30, "maximum": 250, "value": 85 },
+                        { "type": "ValidationTextBox", "name": "WaistDate", "caption": "Date (empty = today)", "value": "" },
+                        { "type": "Button", "caption": "Save", "onClick": "if (HH_SetWaist($id, $WaistValue, $WaistDate)) { echo 'OK'; }" }
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "ExpansionPanel",
+            "caption": "Maintenance",
+            "items": [
+                {
+                    "type": "Button",
+                    "caption": "Archive self test",
+                    "onClick": "echo HH_SelfTestArchive($id);"
+                },
+                {
+                    "type": "Button",
+                    "caption": "Consolidate last days now",
+                    "onClick": "HH_Consolidate($id); echo 'OK';"
+                }
+            ]
+        }
+    ],
+    "status": [
+        { "code": 102, "icon": "active", "caption": "Active" },
+        { "code": 201, "icon": "error", "caption": "Invalid time zone" },
+        { "code": 202, "icon": "error", "caption": "No archive instance found" }
+    ]
+}
