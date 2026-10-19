@@ -93,7 +93,7 @@ FDDB hat keine offizielle Schnittstelle. Das Modul meldet sich mit deinen Zugang
 - *Jetzt importieren* liest die letzten *n* Tage plus heute.
 - *Zeitraum importieren* (max. 400 Tage) für die Erstbefüllung läuft im Hintergrund in Häppchen von 6 Tagen, mit kurzer Pause zwischen den Abrufen. Der Fortschritt steht in *Status*. Ein IPS-Neustart setzt den Lauf fort.
 
-**Speicher:** `<IPS-Datenverzeichnis>/HealthHub/healthhub.sqlite`. Fehlt `pdo_sqlite` im IPS-PHP, schreibt das Modul JSON-Dateien pro Monat nach `HealthHub/food/`. Welcher Fall vorliegt, zeigt *Wartung → Systemprüfung*.
+**Speicher:** `<IPS-Datenverzeichnis>/HealthHub/healthhub.sqlite`. Fehlt `pdo_sqlite` im IPS-PHP, schreibt das Modul JSON-Dateien pro Monat nach `HealthHub/food/`. **Das ist unter Windows der Normalfall:** Das eingebettete PHP 8.5 von IP-Symcon bringt weder `pdo_sqlite` noch `sqlite3` mit (geprüft Okt. 2026). Funktional ist das gleichwertig. Welcher Fall vorliegt, zeigt *Wartung → Systemprüfung*.
 
 | Tabelle | Inhalt |
 |---|---|
