@@ -66,7 +66,14 @@
             "Records": "Datensätze",
             "Last received": "Zuletzt empfangen",
             "Forget buffered records": "Gepufferte Datensätze verwerfen",
-            "Buffered Health Connect records are deleted (archive values stay). Continue?": "Gepufferte Health-Connect-Datensätze werden gelöscht (Archivwerte bleiben). Fortfahren?"
+            "Buffered Health Connect records are deleted (archive values stay). Continue?": "Gepufferte Health-Connect-Datensätze werden gelöscht (Archivwerte bleiben). Fortfahren?",
+            "Delete from (YYYY-MM-DD)": "Löschen von (JJJJ-MM-TT)",
+            "to (YYYY-MM-DD)": "bis (JJJJ-MM-TT)",
+            "Delete Health Connect values": "Health-Connect-Werte löschen",
+            "Archived body, activity and sleep values of this range are deleted (FDDB and waist stay). Continue?": "Archivierte Körper-, Aktivitäts- und Schlafwerte dieses Zeitraums werden gelöscht (FDDB und Bauchumfang bleiben). Fortfahren?",
+            "Invalid date range, expected YYYY-MM-DD": "Ungültiger Zeitraum, erwartet JJJJ-MM-TT",
+            "Date range too long (max. 400 days)": "Zeitraum zu lang (max. 400 Tage)",
+            "%d day value(s) deleted (%s to %s)": "%d Tageswert(e) gelöscht (%s bis %s)"
         }
     }
 }

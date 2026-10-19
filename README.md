@@ -23,10 +23,12 @@ Privates IP-Symcon-Modul, das Gesundheits- und Ernährungsdaten als **Tageswerte
 Brücke Handy → IPS ist die Open-Source-App **HC Webhook** ([GitHub](https://github.com/mcnaveen/health-connect-webhook), Play Store: *Health Connect Webhook*, Paket `com.hcwebhook.app`). Sie liest Health Connect und schickt JSON per POST an IPS.
 
 1. App installieren, **Grant Permissions** → mindestens diese Typen freigeben: *Steps, Sleep, Active Calories, Weight, Body Fat, Lean Body Mass, Body Water Mass, Bone Mass, Resting Heart Rate*.
+   Die App ist im Play Store kostenpflichtig. Kostenlos und identisch: `app-foss-release.apk` von [GitHub Releases](https://github.com/mcnaveen/health-connect-webhook/releases/latest) am Handy laden und installieren (einmalig „unbekannte Apps installieren“ für den Browser erlauben). Updates genauso drüberinstallieren.
 2. **Webhooks → hinzufügen**
    - URL: `http://<IPS-IP>:3777/hook/healthhub/ingest` (genau so, Hooks sind case-sensitive)
-   - Format: **JSON** (nicht Protobuf/gRPC)
-   - Custom Header: `Authorization` = `Bearer <Token>`. Den Token zeigt das Instanzformular unter *Health-Connect-Empfang*.
+   - Delivery format: **JSON (HTTP POST)**, nicht Protobuf/gRPC
+   - **Kopfzeilen verwalten** einschalten, Schlüssel `Authorization`, Wert `Bearer <Token>` (Leerzeichen nach *Bearer*). Den Token zeigt das Instanzformular unter *Health-Connect-Empfang*. **Wichtig:** danach auf **„Kopfzeile hinzufügen“** tippen, erst dann *Speichern*. Ohne diesen Schritt verwirft die App den Header. Alternativ im Reiter *JSON* `{"Authorization": "Bearer <Token>"}` einfügen und *JSON anwenden*.
+   - **„Webhook testen“** schickt erfundene Testwerte (Kennzeichen `"test": true`). Das Modul antwortet mit `200`, speichert sie aber **nicht** (Status: „test payload … not stored“).
 3. Sync-Modus: **Intervall** 30–60 min oder **Zeitplan** (z. B. 08:00 und 21:00).
 4. Falls die App es anbietet: Auflösung für *Steps* und *Active Calories* auf **täglich** stellen. Dann liefert Health Connect fertige, quellenübergreifend bereinigte Tagessummen. Das Modul kommt aber auch mit Einzel- oder Minuten-Records zurecht.
 5. Akku-Optimierung für HC Webhook ausschalten, sonst verpasst Android Syncs.
@@ -169,6 +171,7 @@ Erlaubt sind 30–250 cm, keine Zukunftsdaten. Ein erneuter Eintrag für denselb
 | `HH_Consolidate(int $InstanceID)` | Letzte 3 abgeschlossene Tage aller Tagesvariablen auf genau einen 12:00-Eintrag normalisieren (läuft automatisch täglich 00:10). |
 | `HH_IngestJson(int $InstanceID, string $Json): string` | Verarbeitet eine Payload wie der WebHook (ohne Token-Prüfung) und liefert das Ergebnis als JSON. Zum Testen ohne Handy, z. B. mit einer Datei aus `HealthHub/raw`: `echo HH_IngestJson(12345, file_get_contents('…json'));` |
 | `HH_RegenerateIngestToken(int $InstanceID)` | Neuen Ingest-Token erzeugen, der alte gilt sofort nicht mehr. |
+| `HH_DeleteHealthConnectData(int $InstanceID, string $From, string $To): string` | Löscht für den Zeitraum (`JJJJ-MM-TT`) die archivierten Health-Connect-Werte (Körperwerte, Schritte, Aktivkalorien, Schlaf, Ruhepuls – **nicht** FDDB und Bauchumfang) und die gepufferten Datensätze dieser Tage. Auch als Button unter *Gesehene Health-Connect-Quellen*. Für Fehlimporte, danach in der App neu synchronisieren. |
 | `HH_ResetIngestState(int $InstanceID)` | Puffer der empfangenen Datensätze und die Quellenliste leeren. Archivwerte bleiben. |
 | `HH_ProcessPending(int $InstanceID)` | Interner Timer: entfernt die 0-Einträge beim Logging-Start und wiederholt fehlgeschlagene Re-Aggregationen. Läuft nur, solange etwas ansteht. |
 | `HH_SelfTestArchive(int $InstanceID): string` | Prüft die Schreibstrategie auf diesem System mit einer temporären, versteckten Variable und liefert einen Bericht. Zeigt auch das Roh-Verhalten von `SetValue` + `AC_AddLoggedValues`. Startet das Archiv zweimal neu (Logging an/aus), daher nicht im laufenden Betrieb dauernd ausführen. |

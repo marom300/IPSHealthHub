@@ -272,6 +272,50 @@ class HealthHub extends IPSModule
         $this->ReloadForm();
     }
 
+    /**
+     * Deletes the archived Health Connect values (body, activity, sleep - not FDDB, not waist)
+     * for a date range and drops these days from the record buffer.
+     * HH_DeleteHealthConnectData(int $InstanceID, string $From, string $To)
+     */
+    public function DeleteHealthConnectData(string $From, string $To): string
+    {
+        $clock = $this->clock();
+        if (!HHDayClock::isValidDay($From) || !HHDayClock::isValidDay($To) || $From > $To) {
+            return $this->Translate('Invalid date range, expected YYYY-MM-DD');
+        }
+        $days = $clock->daysBetween($From, $To);
+        if (count($days) > 400) {
+            return $this->Translate('Date range too long (max. 400 days)');
+        }
+        $archiveId = $this->archiveId();
+        if ($archiveId === 0) {
+            return $this->Translate('No archive instance found.');
+        }
+
+        $writer = new HHArchiveWriter($this->backend($archiveId), $clock);
+        $deleted = 0;
+        foreach (HHHcIngest::TYPES as $def) {
+            $stats = $writer->writeDays($this->GetIDForIdent($def['ident']), array_fill_keys($days, null));
+            $deleted += $stats['deleted'];
+        }
+
+        if (IPS_SemaphoreEnter('HH_Ingest_' . $this->InstanceID, 30000)) {
+            try {
+                $state = json_decode($this->ReadAttributeString('IngestState'), true) ?: ['days' => []];
+                foreach ($days as $day) {
+                    unset($state['days'][$day]);
+                }
+                $this->WriteAttributeString('IngestState', json_encode($state));
+            } finally {
+                IPS_SemaphoreLeave('HH_Ingest_' . $this->InstanceID);
+            }
+        }
+
+        $msg = sprintf($this->Translate('%d day value(s) deleted (%s to %s)'), $deleted, $From, $To);
+        $this->SendDebug('Delete', $msg, 0);
+        return $msg;
+    }
+
     /** Forgets the buffered Health Connect records (archive data stays untouched). */
     public function ResetIngestState(): void
     {
@@ -531,8 +575,13 @@ class HealthHub extends IPSModule
             IPS_SemaphoreLeave('HH_Ingest_' . $this->InstanceID);
         }
 
-        $this->rememberOrigins($result['stats']['origins']);
         $stats = $result['stats'];
+        if ($stats['test']) {
+            $this->updateStatusText('Ingest ' . date('d.m. H:i') . ': test payload from the app received - OK, not stored');
+            $this->SendDebug('Ingest', 'test payload ignored', 0);
+            return ['ok' => true, 'test' => true, 'accepted' => 0, 'note' => 'test payload, not stored'];
+        }
+        $this->rememberOrigins($stats['origins']);
         $this->SetValue('LastIngest', time());
         $this->updateStatusText(sprintf(
             'Ingest %s: %d new, %d duplicate, %d ignored, %d too old',

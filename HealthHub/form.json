@@ -235,6 +235,29 @@
                     "caption": "Forget buffered records",
                     "onClick": "HH_ResetIngestState($id); echo 'OK';",
                     "confirm": "Buffered Health Connect records are deleted (archive values stay). Continue?"
+                },
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        {
+                            "type": "ValidationTextBox",
+                            "name": "DeleteFrom",
+                            "caption": "Delete from (YYYY-MM-DD)",
+                            "value": ""
+                        },
+                        {
+                            "type": "ValidationTextBox",
+                            "name": "DeleteTo",
+                            "caption": "to (YYYY-MM-DD)",
+                            "value": ""
+                        },
+                        {
+                            "type": "Button",
+                            "caption": "Delete Health Connect values",
+                            "onClick": "echo HH_DeleteHealthConnectData($id, $DeleteFrom, $DeleteTo);",
+                            "confirm": "Archived body, activity and sleep values of this range are deleted (FDDB and waist stay). Continue?"
+                        }
+                    ]
                 }
             ]
         },

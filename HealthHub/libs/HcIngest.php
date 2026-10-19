@@ -10,7 +10,9 @@ require_once __DIR__ . '/DayClock.php';
  *
  * Payload facts (verified against SyncManager.kt / HealthConnectManager.kt):
  *  - Root: {timestamp, app_version, <type>: [records...]}; arrays only for types with data.
- *  - Times: ISO-8601 UTC ("2026-05-09T12:34:56.789Z").
+ *  - Times: ISO-8601, UTC ("2026-05-09T12:34:56.789Z") or - app setting - local with
+ *    offset ("2026-05-09T14:34:56.789+02:00"); both parse to the same instant.
+ *  - The app's "Test webhook" button sends mock data with "test": true -> ignored.
  *  - Records carry metadata.data_origin (package name of the source app) - but NO record id
  *    in JSON. Deduplication key is therefore (type, time/interval, origin).
  *  - Background sync re-sends a rolling 48 h window incrementally, so records arrive
@@ -98,8 +100,15 @@ class HHHcIngest
         $oldest = $this->clock->addDays($today, -($this->keepDays - 1));
         $days = isset($state['days']) && is_array($state['days']) ? $state['days'] : [];
 
-        $stats = ['accepted' => 0, 'duplicates' => 0, 'ignored' => 0, 'too_old' => 0, 'unused_types' => [], 'origins' => [], 'errors' => []];
+        $stats = ['accepted' => 0, 'duplicates' => 0, 'ignored' => 0, 'too_old' => 0, 'unused_types' => [], 'origins' => [], 'errors' => [], 'test' => false];
         $touched = [];
+
+        // The app's "Test webhook" button sends realistic MOCK data flagged with "test": true.
+        // It must never end up in the archive.
+        if (($payload['test'] ?? false) === true) {
+            $stats['test'] = true;
+            return ['state' => ['days' => $days], 'touched' => [], 'stats' => $stats];
+        }
 
         foreach ($payload as $type => $records) {
             if (!is_array($records) || $type === 'metadata') {

@@ -250,6 +250,28 @@ final class HcIngestTest extends TestCase
         $this->assertSame([], $r['state']['days']);
     }
 
+    public function testAppTestPayloadIsIgnored(): void
+    {
+        $p = $this->parser();
+        $r = $p->ingest($this->payload([
+            'test' => true,
+            'weight' => [['kilograms' => 75.4, 'time' => self::iso('2026-10-16 07:00'), 'metadata' => self::meta('com.google.android.apps.fitness')]],
+        ]), ['days' => ['2026-10-15' => ['weight' => []]]]);
+        $this->assertTrue($r['stats']['test']);
+        $this->assertSame(0, $r['stats']['accepted']);
+        $this->assertSame([], $r['touched']);
+        $this->assertSame(['days' => ['2026-10-15' => ['weight' => []]]], $r['state'], 'state unchanged');
+    }
+
+    public function testLocalTimestampsWithOffset(): void
+    {
+        $p = $this->parser();
+        $r = $p->ingest($this->payload([
+            'weight' => [['kilograms' => 74.0, 'time' => '2026-10-17T00:30:00.000+02:00', 'metadata' => self::meta('a')]],
+        ]), []);
+        $this->assertSame(['2026-10-17'], $r['touched']['Weight']);
+    }
+
     public function testParseTimeVariants(): void
     {
         $this->assertSame(gmmktime(12, 34, 56, 5, 9, 2026), HHHcIngest::parseTime('2026-05-09T12:34:56Z'));

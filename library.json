@@ -5,8 +5,8 @@
     "title": "HealthHub",
     "description": "Collects daily health and nutrition values (FDDB, Fitdays/Google Health via Health Connect) into archived variables and exposes them read-only to Claude via an integrated MCP server.",
     "url": "",
-    "version": "0.3",
-    "build": 3,
+    "version": "0.4",
+    "build": 4,
     "date": 1792195200,
     "compatibility": {
         "minIPS": "7.0"
