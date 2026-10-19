@@ -33,9 +33,13 @@ require_once __DIR__ . '/DayClock.php';
  */
 class HHHcIngest
 {
+    public const RULE_SESSION = 'session'; // median of the first weighing session of the day
     public const RULE_FIRST = 'first';
     public const RULE_LAST = 'last';
     public const RULE_AVG = 'avg';
+
+    /** Measurements up to this many seconds after the first one form the first session. */
+    public const SESSION_WINDOW = 900;
 
     /**
      * Supported payload types.
@@ -67,14 +71,15 @@ class HHHcIngest
     /** @var int */
     private $keepDays;
 
-    public function __construct(HHDayClock $clock, array $bodySources = [], array $activitySources = [], string $measureRule = self::RULE_FIRST, int $keepDays = 14)
+    public function __construct(HHDayClock $clock, array $bodySources = [], array $activitySources = [], string $measureRule = self::RULE_SESSION, int $keepDays = 14)
     {
         $this->clock = $clock;
         $this->preferred = [
             'body'     => self::normaliseList($bodySources),
             'activity' => self::normaliseList($activitySources),
         ];
-        $this->measureRule = in_array($measureRule, [self::RULE_FIRST, self::RULE_LAST, self::RULE_AVG], true) ? $measureRule : self::RULE_FIRST;
+        $rules = [self::RULE_SESSION, self::RULE_FIRST, self::RULE_LAST, self::RULE_AVG];
+        $this->measureRule = in_array($measureRule, $rules, true) ? $measureRule : self::RULE_SESSION;
         $this->keepDays = max(1, $keepDays);
     }
 
@@ -231,17 +236,7 @@ class HHHcIngest
 
         switch ($def['kind']) {
             case 'instant':
-                usort($rows, static function ($a, $b) {
-                    return $a['t'] <=> $b['t'];
-                });
-                $rule = $def['rule'] ?? $this->measureRule;
-                if ($rule === self::RULE_LAST) {
-                    $value = $rows[count($rows) - 1]['v'];
-                } elseif ($rule === self::RULE_AVG) {
-                    $value = array_sum(array_column($rows, 'v')) / count($rows);
-                } else {
-                    $value = $rows[0]['v'];
-                }
+                $value = self::applyRule($rows, $def['rule'] ?? $this->measureRule);
                 break;
             default: // interval, sleep
                 $value = array_sum(array_column($rows, 'v'));
@@ -290,7 +285,7 @@ class HHHcIngest
         foreach ($rows as $f) {
             foreach ($weight as $w) {
                 if ($w['o'] === $f['o'] && abs($w['t'] - $f['t']) <= 60) {
-                    $pairs[] = $w['v'] * (1 - $f['v'] / 100);
+                    $pairs[] = ['t' => $f['t'], 'v' => $w['v'] * (1 - $f['v'] / 100)];
                     break;
                 }
             }
@@ -298,14 +293,45 @@ class HHHcIngest
         if (count($pairs) === 0) {
             return null;
         }
-        if ($this->measureRule === self::RULE_LAST) {
-            $lean = $pairs[count($pairs) - 1];
-        } elseif ($this->measureRule === self::RULE_AVG) {
-            $lean = array_sum($pairs) / count($pairs);
-        } else {
-            $lean = $pairs[0];
+        return round(self::applyRule($pairs, $this->measureRule), self::TYPES['lean_body_mass']['digits']);
+    }
+
+    /**
+     * Picks the day value from instant rows ['t' => ts, 'v' => value].
+     *  session: median of the first weighing session (all measurements within
+     *           SESSION_WINDOW after the first one) - robust against a single outlier
+     *  first / last / avg: as named
+     */
+    private static function applyRule(array $rows, string $rule): float
+    {
+        usort($rows, static function ($a, $b) {
+            return $a['t'] <=> $b['t'];
+        });
+        switch ($rule) {
+            case self::RULE_LAST:
+                return (float) $rows[count($rows) - 1]['v'];
+            case self::RULE_AVG:
+                return array_sum(array_column($rows, 'v')) / count($rows);
+            case self::RULE_FIRST:
+                return (float) $rows[0]['v'];
+            default: // session
+                $start = $rows[0]['t'];
+                $values = [];
+                foreach ($rows as $r) {
+                    if ($r['t'] - $start <= self::SESSION_WINDOW) {
+                        $values[] = (float) $r['v'];
+                    }
+                }
+                return self::median($values);
         }
-        return round($lean, self::TYPES['lean_body_mass']['digits']);
+    }
+
+    private static function median(array $values): float
+    {
+        sort($values);
+        $n = count($values);
+        $mid = intdiv($n, 2);
+        return $n % 2 === 1 ? $values[$mid] : ($values[$mid - 1] + $values[$mid]) / 2;
     }
 
     /**

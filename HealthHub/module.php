@@ -94,7 +94,8 @@ class HealthHub extends IPSModule
         $this->RegisterPropertyString('IngestToken', '');            // generated on first ApplyChanges
         $this->RegisterPropertyString('BodySources', '');            // preferred data_origin(s), comma separated
         $this->RegisterPropertyString('ActivitySources', '');
-        $this->RegisterPropertyString('MeasureRule', HHHcIngest::RULE_FIRST);
+        $this->RegisterPropertyString('MeasureRule', HHHcIngest::RULE_SESSION);
+        $this->RegisterAttributeBoolean('RuleMigrated', false);     // v0.6: first -> session once
         $this->RegisterPropertyInteger('IngestKeepDays', 14);
         $this->RegisterAttributeString('IngestState', '{"days":{}}');
         $this->RegisterAttributeString('SeenOrigins', '{}');         // type => origin => [count, last]
@@ -125,6 +126,16 @@ class HealthHub extends IPSModule
         $this->RegisterVariableInteger('LastIngest', $this->Translate('Last Health Connect ingest'), '~UnixTimestamp', 90);
         $this->RegisterVariableInteger('LastFddbImport', $this->Translate('Last FDDB import'), '~UnixTimestamp', 91);
         $this->RegisterVariableString('Status', $this->Translate('Status'), '', 92);
+
+        // v0.6: the robust session median became the default - switch the old default once
+        if (!$this->ReadAttributeBoolean('RuleMigrated')) {
+            $this->WriteAttributeBoolean('RuleMigrated', true);
+            if ($this->ReadPropertyString('MeasureRule') === HHHcIngest::RULE_FIRST) {
+                IPS_SetProperty($this->InstanceID, 'MeasureRule', HHHcIngest::RULE_SESSION);
+                IPS_ApplyChanges($this->InstanceID);
+                return;
+            }
+        }
 
         if ($this->ReadPropertyString('IngestToken') === '') {
             IPS_SetProperty($this->InstanceID, 'IngestToken', HHHookAuth::newToken());

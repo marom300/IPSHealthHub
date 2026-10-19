@@ -56,6 +56,7 @@
             "Preferred sources body values (app package names, comma separated, empty = automatic)": "Bevorzugte Quellen Körperwerte (App-Paketnamen, kommagetrennt, leer = automatisch)",
             "Preferred sources activity/sleep (app package names, comma separated, empty = automatic)": "Bevorzugte Quellen Aktivität/Schlaf (App-Paketnamen, kommagetrennt, leer = automatisch)",
             "Several body measurements per day": "Mehrere Körpermessungen pro Tag",
+            "First session of the day, median (robust)": "Erste Sitzung des Tages, Median (robust)",
             "First of the day (morning, fasting)": "Erste des Tages (morgens nüchtern)",
             "Last of the day": "Letzte des Tages",
             "Average": "Mittelwert",

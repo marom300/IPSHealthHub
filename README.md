@@ -45,7 +45,7 @@ Nur diese 9 Datentypen in der App aktivieren (Berechtigungen **und** Webhook-Aus
 
 | Health-Connect-Typ | Variable | Regel pro Tag |
 |---|---|---|
-| `weight`, `body_fat`, `lean_body_mass`, `body_water_mass`, `bone_mass` | Gewicht, Körperfett, magere Masse, Körperwasser, Knochenmasse | Messung nach Regel *Mehrere Körpermessungen pro Tag* (Standard: erste) |
+| `weight`, `body_fat`, `lean_body_mass`, `body_water_mass`, `bone_mass` | Gewicht, Körperfett, magere Masse, Körperwasser, Knochenmasse | Messung nach Regel *Mehrere Körpermessungen pro Tag* (Standard: Median der ersten Sitzung) |
 | `resting_heart_rate` | Ruhepuls | letzter Wert des Tages |
 | `steps` | Schritte | Summe, siehe unten |
 | `active_calories` | Aktivkalorien (Uhr) | Summe, siehe unten. **Uhrschätzung, vermutlich 30–50 % zu hoch, nicht fürs Kalorienziel.** |
@@ -139,7 +139,7 @@ Der heutige Eintrag trägt dadurch die Schreibzeit statt 12:00. Der Timer **Kons
 | Token (`IngestToken`) | zufällig (32 Hex-Zeichen) | Text | Wird beim ersten Übernehmen automatisch erzeugt. Muss in HC Webhook als Header `Authorization: Bearer <Token>` eingetragen sein. Ebenfalls akzeptiert: Basic Auth mit beliebigem Benutzer und dem Token als Passwort, oder Header `X-Api-Key: <Token>`. Leerer Token = alles wird abgewiesen. *Token neu generieren* erzeugt einen neuen, danach in der App nachtragen. |
 | Bevorzugte Quellen Körperwerte (`BodySources`) | leer | Paketnamen, kommagetrennt | Welche Quell-App für Gewicht, Körperfett, magere Masse, Körperwasser und Knochenmasse zählt, falls mehrere Apps diese Werte in Health Connect schreiben. Reihenfolge = Priorität. Paketnamen aus der Liste *Gesehene Health-Connect-Quellen* kopieren, z. B. den der Fitdays-App. Leer = automatisch (Quelle mit den meisten Messungen am Tag). |
 | Bevorzugte Quellen Aktivität/Schlaf (`ActivitySources`) | leer | Paketnamen, kommagetrennt | Wie oben für Schritte, Aktivkalorien, Schlaf und Ruhepuls, typischerweise die App der Pixel Watch (Google Health/Fitbit). Leer = automatisch (bei Schritten/Aktivkalorien die Health-Connect-Tagessumme). |
-| Mehrere Körpermessungen pro Tag (`MeasureRule`) | Erste des Tages | erste / letzte / Mittelwert | Welche Waagen-Messung als Tageswert gilt. *Erste* = morgens nüchtern, am besten vergleichbar. |
+| Mehrere Körpermessungen pro Tag (`MeasureRule`) | Erste Sitzung des Tages, Median | Sitzung-Median / erste / letzte / Mittelwert | Welche Waagen-Messung als Tageswert gilt. **Sitzung-Median** (Standard): alle Messungen bis 15 min nach der ersten Messung des Tages bilden die Morgen-Sitzung, davon zählt der Median (bei 2 Messungen der Mittelwert). Ein einzelner Ausreißer, z. B. mit Kleidung oder vor dem Einschwingen der Waage, fällt so heraus, spätere Messungen am Tag zählen nicht. *Erste* = erste Messung des Tages, *letzte* = letzte, *Mittelwert* = alle des Tages. Die berechnete magere Masse folgt derselben Regel. Bestehende Instanzen mit „Erste“ werden mit v0.6 einmalig auf Sitzung-Median umgestellt. |
 | Records puffern für (`IngestKeepDays`) | 14 Tage | 3–120 | Wie viele Tage empfangene Datensätze gepuffert werden. Ältere Datensätze werden abgelehnt (`too_old`), damit ein unvollständiger alter Tag keinen guten Archivwert überschreibt. Für eine einmalige Nachbefüllung erhöhen, danach zurückstellen (der Puffer liegt in einem Instanz-Attribut). |
 
 ### Ziele

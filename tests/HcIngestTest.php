@@ -276,6 +276,59 @@ final class HcIngestTest extends TestCase
         $this->assertSame(58.1, $p->computeDay($r['state'], '2026-10-17', 'LeanMass'));
     }
 
+    public function testSessionMedianIgnoresOutlier(): void
+    {
+        // real case 2026-09-23: three weighings within 5 minutes, the first one is off
+        $fd = self::meta('cn.fitdays.fitdays');
+        $p = $this->parser([], [], HHHcIngest::RULE_SESSION);
+        $r = $p->ingest($this->payload([
+            'weight' => [
+                ['kilograms' => 74.4, 'time' => self::iso('2026-10-17 05:16:44'), 'metadata' => $fd],
+                ['kilograms' => 72.5, 'time' => self::iso('2026-10-17 05:18:44'), 'metadata' => $fd],
+                ['kilograms' => 72.6, 'time' => self::iso('2026-10-17 05:21:15'), 'metadata' => $fd],
+                // evening weighing is not part of the morning session
+                ['kilograms' => 73.9, 'time' => self::iso('2026-10-17 19:30:00'), 'metadata' => $fd],
+            ],
+            'body_fat' => [
+                ['percentage' => 21.6, 'time' => self::iso('2026-10-17 05:16:44'), 'metadata' => $fd],
+                ['percentage' => 20.0, 'time' => self::iso('2026-10-17 05:18:44'), 'metadata' => $fd],
+                ['percentage' => 20.2, 'time' => self::iso('2026-10-17 05:21:15'), 'metadata' => $fd],
+            ],
+        ]), []);
+        $this->assertSame(72.6, $p->computeDay($r['state'], '2026-10-17', 'Weight'));
+        $this->assertSame(20.2, $p->computeDay($r['state'], '2026-10-17', 'BodyFat'));
+        // lean per measurement: 58.33, 58.00, 57.93 -> median 58.00
+        $this->assertSame(58.0, $p->computeDay($r['state'], '2026-10-17', 'LeanMass'));
+    }
+
+    public function testSessionMedianWithTwoAndOneMeasurement(): void
+    {
+        $p = $this->parser([], [], HHHcIngest::RULE_SESSION);
+        $r = $p->ingest($this->payload([
+            'weight' => [
+                ['kilograms' => 72.0, 'time' => self::iso('2026-10-16 06:00:00'), 'metadata' => self::meta('a')],
+                ['kilograms' => 72.4, 'time' => self::iso('2026-10-16 06:10:00'), 'metadata' => self::meta('a')],
+                ['kilograms' => 71.8, 'time' => self::iso('2026-10-17 06:00:00'), 'metadata' => self::meta('a')],
+            ],
+        ]), []);
+        $this->assertSame(72.2, $p->computeDay($r['state'], '2026-10-16', 'Weight'), 'two in session -> mean of both');
+        $this->assertSame(71.8, $p->computeDay($r['state'], '2026-10-17', 'Weight'), 'single measurement');
+    }
+
+    public function testDefaultRuleIsSession(): void
+    {
+        $p = new HHHcIngest($this->clock);
+        $r = $p->ingest($this->payload([
+            'weight' => [
+                ['kilograms' => 80.0, 'time' => self::iso('2026-10-17 06:00:00'), 'metadata' => self::meta('a')],
+                ['kilograms' => 72.0, 'time' => self::iso('2026-10-17 06:01:00'), 'metadata' => self::meta('a')],
+                ['kilograms' => 72.2, 'time' => self::iso('2026-10-17 06:02:00'), 'metadata' => self::meta('a')],
+            ],
+        ]), []);
+        $this->assertSame(72.2, $p->computeDay($r['state'], '2026-10-17', 'Weight'));
+        $this->assertSame(72.2, (new HHHcIngest($this->clock, [], [], 'nonsense'))->computeDay($r['state'], '2026-10-17', 'Weight'));
+    }
+
     public function testLeanMassNotDerivedWithoutMatchingWeight(): void
     {
         $p = $this->parser();

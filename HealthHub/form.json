@@ -73,6 +73,10 @@
                             "caption": "Several body measurements per day",
                             "options": [
                                 {
+                                    "caption": "First session of the day, median (robust)",
+                                    "value": "session"
+                                },
+                                {
                                     "caption": "First of the day (morning, fasting)",
                                     "value": "first"
                                 },
