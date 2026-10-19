@@ -7,6 +7,8 @@ require_once __DIR__ . '/libs/ArchiveWriter.php';
 require_once __DIR__ . '/libs/HcIngest.php';
 require_once __DIR__ . '/libs/HookAuth.php';
 require_once __DIR__ . '/libs/FddbImport.php';
+require_once __DIR__ . '/libs/McpTools.php';
+require_once __DIR__ . '/libs/McpServer.php';
 
 /**
  * HealthHub - IP-Symcon module
@@ -22,6 +24,8 @@ require_once __DIR__ . '/libs/FddbImport.php';
  *          raw payload logging, de-duplication and daily aggregation.
  * Phase 3: FDDB diary import (login + diary page per day), entries in SQLite,
  *          day totals from the store, nightly timer, range import via work queue.
+ * Phase 4: read-only MCP server for Claude on /hook/healthhub/mcp (Streamable HTTP,
+ *          protocol 2026-07-28 plus legacy initialize clients), own bearer token.
  */
 class HealthHub extends IPSModule
 {
@@ -31,6 +35,9 @@ class HealthHub extends IPSModule
     private const STATUS_NO_ARCHIVE = 202;
 
     private const HOOK_INGEST = '/hook/healthhub/ingest';
+    private const HOOK_MCP = '/hook/healthhub/mcp';
+    /** Reported as serverInfo.version */
+    private const MODULE_VERSION = '0.10';
     /** Raw payload files kept in <kernel dir>/HealthHub/raw */
     private const RAW_KEEP_FILES = 300;
 
@@ -106,6 +113,11 @@ class HealthHub extends IPSModule
         $this->RegisterPropertyString('MeasureRule', HHHcIngest::RULE_SESSION);
         $this->RegisterAttributeBoolean('RuleMigrated', false);     // v0.6: first -> session once
         $this->RegisterPropertyInteger('IngestKeepDays', 14);
+
+        // --- MCP server ---
+        $this->RegisterPropertyBoolean('McpEnabled', true);
+        $this->RegisterPropertyString('McpToken', '');               // generated on first ApplyChanges
+        $this->RegisterPropertyInteger('McpMaxDays', 366);
         $this->RegisterAttributeString('IngestState', '{"days":{}}');
         $this->RegisterAttributeString('SeenOrigins', '{}');         // type => origin => [count, last]
 
@@ -166,8 +178,12 @@ class HealthHub extends IPSModule
             }
         }
 
-        if ($this->ReadPropertyString('IngestToken') === '') {
-            IPS_SetProperty($this->InstanceID, 'IngestToken', HHHookAuth::newToken());
+        if ($this->ReadPropertyString('IngestToken') === '' || $this->ReadPropertyString('McpToken') === '') {
+            foreach (['IngestToken', 'McpToken'] as $prop) {
+                if ($this->ReadPropertyString($prop) === '') {
+                    IPS_SetProperty($this->InstanceID, $prop, HHHookAuth::newToken());
+                }
+            }
             IPS_ApplyChanges($this->InstanceID);
             return;
         }
@@ -187,6 +203,7 @@ class HealthHub extends IPSModule
         if (IPS_GetKernelRunlevel() == KR_READY) {
             $this->enableArchiving();
             $this->registerHook(self::HOOK_INGEST);
+            $this->registerHook(self::HOOK_MCP);
         } else {
             $this->RegisterMessage(0, IPS_KERNELSTARTED);
         }
@@ -204,6 +221,7 @@ class HealthHub extends IPSModule
         if ($Message == IPS_KERNELSTARTED && $this->archiveId() > 0) {
             $this->enableArchiving();
             $this->registerHook(self::HOOK_INGEST);
+            $this->registerHook(self::HOOK_MCP);
         }
     }
 
@@ -279,6 +297,10 @@ class HealthHub extends IPSModule
     public function ProcessHookData()
     {
         $hook = (string) ($_SERVER['HOOK'] ?? parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH));
+        if (rtrim($hook, '/') === self::HOOK_MCP) {
+            $this->handleMcp();
+            return;
+        }
         if (rtrim($hook, '/') !== self::HOOK_INGEST) {
             $this->respond(404, ['ok' => false, 'error' => 'unknown hook']);
             return;
@@ -360,6 +382,31 @@ class HealthHub extends IPSModule
         return $msg;
     }
 
+    /** Creates a new MCP token (Claude clients must be reconfigured). */
+    public function RegenerateMcpToken(): void
+    {
+        IPS_SetProperty($this->InstanceID, 'McpToken', HHHookAuth::newToken());
+        IPS_ApplyChanges($this->InstanceID);
+        $this->ReloadForm();
+    }
+
+    /**
+     * Runs one MCP tool locally and returns its JSON result (for tests in IPS, no token).
+     * HH_McpTest(int $InstanceID, string $Tool, string $ArgumentsJson)
+     */
+    public function McpTest(string $Tool, string $ArgumentsJson): string
+    {
+        $tools = $this->mcpTools();
+        if (!$tools->has($Tool)) {
+            return 'Unknown tool: ' . $Tool;
+        }
+        try {
+            return HHMcpServer::compactJson($tools->call($Tool, json_decode($ArgumentsJson, true) ?: []));
+        } catch (Throwable $e) {
+            return 'Error: ' . $e->getMessage();
+        }
+    }
+
     /** Forgets the buffered Health Connect records (archive data stays untouched). */
     public function ResetIngestState(): void
     {
@@ -385,9 +432,11 @@ class HealthHub extends IPSModule
             }
         }
         $url = 'http://<IPS-IP>:3777' . self::HOOK_INGEST;
+        $mcpUrl = 'http://<IPS-IP>:3777' . self::HOOK_MCP;
         $patches = [
             'IngestUrl'   => ['caption' => sprintf($this->Translate('Webhook URL: %s - header: Authorization: Bearer <token>'), $url)],
             'SeenOrigins' => ['values' => $rows],
+            'McpUrl'      => ['caption' => sprintf($this->Translate('MCP URL: %s - header: Authorization: Bearer <MCP token>'), $mcpUrl)],
         ];
         $this->patchForm($form['elements'], $patches);
         $this->patchForm($form['actions'], $patches);
@@ -899,6 +948,99 @@ class HealthHub extends IPSModule
         IPS_ApplyChanges($hookId);
     }
 
+    /** MCP endpoint: token check, then the protocol handler. Strictly read-only. */
+    private function handleMcp(): void
+    {
+        if (!$this->ReadPropertyBoolean('McpEnabled')) {
+            $this->respond(404, ['error' => 'MCP server disabled']);
+            return;
+        }
+        if (!HHHookAuth::isAuthorized($_SERVER, $this->ReadPropertyString('McpToken'))) {
+            $this->SendDebug('MCP', 'rejected: invalid or missing token from ' . ($_SERVER['REMOTE_ADDR'] ?? '?'), 0);
+            header('WWW-Authenticate: Bearer');
+            $this->respond(401, ['jsonrpc' => '2.0', 'error' => ['code' => -32600, 'message' => 'Unauthorized: Authorization: Bearer <token> required']]);
+            return;
+        }
+        $headers = [];
+        foreach ($_SERVER as $k => $v) {
+            if (strpos((string) $k, 'HTTP_') === 0) {
+                $headers[str_replace('_', '-', substr((string) $k, 5))] = (string) $v;
+            }
+        }
+        $body = (string) file_get_contents('php://input');
+        $res = $this->mcpServer()->handle((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'), $headers, $body);
+
+        $reasons = [200 => 'OK', 202 => 'Accepted', 400 => 'Bad Request', 403 => 'Forbidden', 404 => 'Not Found', 405 => 'Method Not Allowed'];
+        header('HTTP/1.1 ' . $res['status'] . ' ' . ($reasons[$res['status']] ?? ''));
+        foreach ($res['headers'] as $name => $value) {
+            header($name . ': ' . $value);
+        }
+        if ($res['body'] !== null) {
+            echo $res['body'];
+        }
+        $req = json_decode($body, true);
+        $this->SendDebug('MCP', ($req['method'] ?? '?') . (isset($req['params']['name']) ? ' ' . $req['params']['name'] : '') . ' -> ' . $res['status'], 0);
+    }
+
+    private function mcpServer(): HHMcpServer
+    {
+        $instructions = 'Personal health data of one person (Roman) from IP-Symcon: FDDB nutrition diary, '
+            . 'Fitdays scale via Health Connect, Pixel Watch (steps, sleep, heart rate). Goal: lose fat while keeping lean mass. '
+            . 'Call get_profile first for targets and context. All tools are read-only. Dates YYYY-MM-DD, local time Europe/Vienna. '
+            . 'Use get_daily_overview for most questions, get_weekly_summary for trends and the TDEE estimate.';
+        return new HHMcpServer($this->mcpTools(), self::MODULE_VERSION, $instructions);
+    }
+
+    private function mcpTools(): HHMcpTools
+    {
+        $clock = $this->clock();
+        $archiveId = $this->archiveId();
+        $varIds = [];
+        foreach (array_keys(self::DAILY_VARS) as $ident) {
+            $varIds[$ident] = $this->GetIDForIdent($ident);
+        }
+        $store = null;
+        try {
+            $store = $this->foodStore(true);
+        } catch (Throwable $e) {
+            $store = null; // nothing imported yet
+        }
+        $source = new HHModuleHealthData(
+            new HHArchiveWriter(new HHIpsArchiveBackend($archiveId), $clock),
+            $varIds,
+            $store,
+            $this->mcpProfile()
+        );
+        return new HHMcpTools($source, $clock, $this->ReadPropertyInteger('McpMaxDays'));
+    }
+
+    /** Goals and context for get_profile. */
+    private function mcpProfile(): array
+    {
+        return [
+            'kcal_target' => $this->ReadPropertyInteger('KcalTarget'),
+            'protein_target_g' => $this->ReadPropertyInteger('ProteinTarget'),
+            'fat_target_g' => $this->ReadPropertyInteger('FatTarget'),
+            'calorie_target_method' => 'Flat daily target in FDDB. Sport is included and not tracked separately; watch calories are NOT added (calorie import from the watch into FDDB is disabled).',
+            'target_pace_kg_per_week' => [$this->ReadPropertyFloat('PaceMin'), $this->ReadPropertyFloat('PaceMax')],
+            'goal' => 'Lose body fat while keeping lean mass.',
+            'start' => [
+                'date' => $this->ReadPropertyString('StartDate'),
+                'weight_kg' => $this->ReadPropertyFloat('StartWeight'),
+                'body_fat_pct' => $this->ReadPropertyFloat('StartBodyFat'),
+                'lean_mass_kg' => $this->ReadPropertyFloat('StartLeanMass'),
+            ],
+            'time_zone' => $this->ReadPropertyString('TimeZone'),
+            'sources' => [
+                'nutrition' => 'FDDB diary (imported nightly, last ' . $this->ReadPropertyInteger('FddbDaysBack') . ' days re-imported)',
+                'body' => 'Fitdays scale via Health Connect; value per day = median of the first weighing session; lean mass derived from weight and body fat; body water not exported by Fitdays',
+                'activity' => 'Pixel Watch via Health Connect: steps, active calories (estimate, likely 30-50 % too high), sleep (wake-up day, without awake phases), resting heart rate derived from sleep heart rate',
+                'waist' => 'manual entry',
+            ],
+            'notes' => 'A day without FDDB entries means "not tracked", not 0 kcal. Entries from the FDDB AI food scan or FDDB recipes may be missing.',
+        ];
+    }
+
     private function queueFddb(array $days): string
     {
         if ($this->ReadPropertyString('FddbUser') === '' || $this->ReadPropertyString('FddbPassword') === '') {
@@ -1076,5 +1218,55 @@ class HealthHub extends IPSModule
         if ($type === VARIABLETYPE_FLOAT) {
             IPS_SetVariableProfileDigits($name, $digits);
         }
+    }
+}
+
+/**
+ * MCP data source on top of the IPS archive (daily variables) and the food store.
+ * Read-only by construction: it only calls readDays(), entries() and days().
+ */
+class HHModuleHealthData implements HHHealthDataSource
+{
+    /** @var HHArchiveWriter */
+    private $writer;
+    /** @var array ident => variable id */
+    private $varIds;
+    /** @var HHFoodStore|null */
+    private $store;
+    /** @var array */
+    private $profile;
+
+    public function __construct(HHArchiveWriter $writer, array $varIds, ?HHFoodStore $store, array $profile)
+    {
+        $this->writer = $writer;
+        $this->varIds = $varIds;
+        $this->store = $store;
+        $this->profile = $profile;
+    }
+
+    public function daily(array $idents, string $from, string $to): array
+    {
+        $out = [];
+        foreach ($idents as $ident) {
+            if (isset($this->varIds[$ident])) {
+                $out[$ident] = $this->writer->readDays($this->varIds[$ident], $from, $to);
+            }
+        }
+        return $out;
+    }
+
+    public function foodEntries(string $from, string $to, string $search = '', string $meal = '', int $limit = 5000): array
+    {
+        return $this->store === null ? [] : $this->store->entries($from, $to, $search, $meal, $limit);
+    }
+
+    public function foodDays(string $from, string $to): array
+    {
+        return $this->store === null ? [] : $this->store->days($from, $to);
+    }
+
+    public function profile(): array
+    {
+        return $this->profile;
     }
 }

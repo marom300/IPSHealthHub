@@ -1,6 +1,6 @@
 # HealthHub (IP-Symcon)
 
-Privates IP-Symcon-Modul, das Gesundheits- und Ernährungsdaten als **Tageswerte** in archivierten Variablen sammelt und sie (ab Phase 4) über einen integrierten, **read-only** MCP-Server für Claude abfragbar macht.
+Privates IP-Symcon-Modul, das Gesundheits- und Ernährungsdaten als **Tageswerte** in archivierten Variablen sammelt und sie über einen integrierten, **read-only** MCP-Server für Claude abfragbar macht.
 
 | Quelle | Weg | Werte |
 |---|---|---|
@@ -9,7 +9,7 @@ Privates IP-Symcon-Modul, das Gesundheits- und Ernährungsdaten als **Tageswerte
 | Pixel Watch | Health Connect → HC Webhook *(Phase 2)* | Schritte, Aktivkalorien, Schlaf, Ruhepuls |
 | manuell | Variable / Formular / `HH_SetWaist` | Bauchumfang |
 
-> **Stand: Phase 3 (FDDB-Import)** – Grundgerüst, Health-Connect-Empfang (HC Webhook) und FDDB-Import mit Einzeleinträgen in SQLite. Der MCP-Server für Claude folgt in Phase 4.
+> **Stand: Phase 4 (MCP-Server)** – Grundgerüst, Health-Connect-Empfang (HC Webhook), FDDB-Import mit Einzeleinträgen und der MCP-Server, über den Claude Code und Claude Desktop die Daten lesen.
 
 ## Installation
 
@@ -104,6 +104,87 @@ Die Variablen *Kalorien gegessen*, *Protein*, *Fett*, *Kohlenhydrate*, *Zucker* 
 
 **Datenschutz:** Das FDDB-Passwort liegt als Instanz-Eigenschaft in der IPS-Konfiguration (`settings.json`), wie bei allen IPS-Modulen. Mit dem Debug-Modus landet jede Tagebuchseite als `HealthHub/raw/fddb_<Tag>.html` auf der Platte.
 
+## Claude anbinden (MCP-Server)
+
+Das Modul enthält einen MCP-Server unter `http://<IPS-IP>:3777/hook/healthhub/mcp`. Claude kann damit Fragen beantworten wie „Wie ist mein echter Gesamtumsatz seit Oktober?“, „Passt mein Proteinschnitt?“ oder „Verliere ich magere Masse?“.
+
+- **Strikt read-only:** Kein Tool schreibt etwas oder führt IPS-Funktionen aus.
+- **Eigenes Token**, getrennt vom Health-Connect-Token: Formular → *MCP-Server (Claude)* → *MCP-Token*.
+- **Nur LAN/VPN.** Bewusst **kein** Custom Connector über claude.ai, sonst müsste der Server aus dem Internet erreichbar sein. Ist IP-Symcon Connect aktiv, ist der Pfad auch darüber erreichbar, dann schützt allein das Token.
+
+### Claude Code
+
+Eine Zeile in der Eingabeaufforderung, `<IPS-IP>` und `<MCP-Token>` ersetzen:
+
+```
+claude mcp add --transport http --scope user healthhub http://<IPS-IP>:3777/hook/healthhub/mcp --header "Authorization: Bearer <MCP-Token>"
+```
+
+- `--scope user` macht den Server in allen Projekten verfügbar. Ohne `--scope` gilt er nur im aktuellen Ordner.
+- Prüfen mit `claude mcp list` (erwartet: `healthhub … ✔ Connected`) oder in Claude Code mit `/mcp`.
+- `✘` mit 401 bedeutet: Token falsch. 404 bedeutet: Pfad falsch oder MCP-Server im Formular deaktiviert.
+
+### Claude Desktop
+
+Claude Desktop verbindet lokale Server über eine Brücke. Dafür wird [Node.js](https://nodejs.org) benötigt, `npx` lädt [`mcp-remote`](https://github.com/geelen/mcp-remote) automatisch.
+
+1. Claude Desktop → *Einstellungen → Entwickler → Konfiguration bearbeiten* öffnet `claude_desktop_config.json` (unter Windows `%APPDATA%\Claude\claude_desktop_config.json`).
+2. Eintragen bzw. in einen bestehenden `mcpServers`-Block ergänzen:
+
+```json
+{
+  "mcpServers": {
+    "healthhub": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote",
+        "http://<IPS-IP>:3777/hook/healthhub/mcp",
+        "--allow-http",
+        "--transport", "http-only",
+        "--header", "Authorization:${AUTH_HEADER}"
+      ],
+      "env": { "AUTH_HEADER": "Bearer <MCP-Token>" }
+    }
+  }
+}
+```
+
+3. Claude Desktop komplett beenden (auch im Tray) und neu starten. Unter dem Werkzeug-Symbol erscheinen die HealthHub-Tools.
+
+Hinweise zur Konfiguration:
+- `Authorization:${AUTH_HEADER}` steht bewusst **ohne Leerzeichen**. Claude Desktop unter Windows reicht Argumente mit Leerzeichen sonst falsch weiter, deshalb kommt der Wert über `env`.
+- `--allow-http` ist nötig, weil der Server im LAN ohne HTTPS läuft.
+
+### Tools
+
+Alle Datumsangaben `JJJJ-MM-TT` (Ortszeit), Zeitraum max. *Max. Zeitraum pro Abfrage* (Standard 366 Tage). Antworten sind kompaktes JSON mit **einer Zeile pro Tag**, fehlende Werte `null`.
+
+| Tool | Parameter | Inhalt |
+|---|---|---|
+| `get_profile` | – | Ziele (1800 kcal, 130 g Protein, 60 g Fett), Methode, Zieltempo, Startwerte, Datenquellen, Einschränkungen |
+| `get_daily_overview` | `from`, `to` | Pro Tag alle Werte aus allen Quellen. Wichtigstes Tool. |
+| `get_nutrition` | `from`, `to` | FDDB-Tagessummen inkl. Zucker, Ballaststoffe, Alkohol, Salz, Anzahl Einträge; Durchschnitt über getrackte Tage und Ziele |
+| `get_food_entries` | `from`, `to` (max. 31 Tage), opt. `search`, `meal` | Einzeleinträge mit Uhrzeit, Mahlzeit, Produkt, Menge, Makros |
+| `get_food_stats` | `from`, `to`, opt. `sort_by` (`kcal`/`protein`/`count`), `limit` | Pro Produkt: Häufigkeit, Tage, Menge, Makros, Anteil an kcal/Protein |
+| `get_meal_pattern` | `from`, `to` | Ø kcal/Protein pro Mahlzeit und Tageszeitfenster, Wochentag vs. Wochenende |
+| `get_body` | `from`, `to` | Gewicht, Körperfett, magere Masse, Wasser, Knochen, Bauchumfang (nur Messtage) |
+| `get_activity` | `from`, `to` | Schritte, Aktivkalorien (Uhrschätzung, vermutlich zu hoch), Schlaf, Ruhepuls |
+| `get_weekly_summary` | `from`, `to` | ISO-Wochen: Mittelwerte, Gewichtstrend, getrackte Tage, **geschätzter Gesamtumsatz (TDEE)** pro Woche und über den Zeitraum, mit Methode und Unsicherheit |
+
+**TDEE-Schätzung:** `Ø kcal_in − (Δ Wochenmittel-Gewicht × 7700) / Tage`.
+- Pro Woche nur, wenn mindestens 5 Ernährungstage getrackt sind und in dieser und der Vorwoche gewogen wurde.
+- Gesamtwert: erste gegen letzte qualifizierte Woche, mit Unsicherheit in kcal. Eine einzelne Woche ist wegen Wasserschwankungen grob (±300–550 kcal). Über mehrere Wochen wird die Schätzung deutlich genauer.
+- Uhr-Kalorien fließen nicht ein. Fehlende FDDB-Einträge drücken die Schätzung nach unten.
+
+`query_food_sql` aus der ursprünglichen Planung gibt es **nicht**: Das IPS-PHP hat kein SQLite, und mit dem JSON-Speicher lässt sich „nur lesen“ nicht technisch erzwingen.
+
+**Protokoll:** Streamable HTTP, nur POST mit JSON-Antwort (kein SSE). Der Server ist „dual-era“:
+- Er spricht das zustandslose MCP **2026-07-28**: `server/discover`, Header `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` werden gegen den Body geprüft.
+- Er bedient ebenso ältere Clients mit `initialize` (2025-11-25, 2025-06-18, 2025-03-26), ohne Session-ID.
+- GET/DELETE → 405, Notifications → 202, ein fremder `Origin`-Header → 403.
+
+**Testen ohne Claude:** Formular → *MCP-Test* → Tool wählen, Argumente als JSON (z. B. `{"from":"2026-09-15","to":"2026-10-19"}`) → *Ausführen*. Das zeigt genau die Antwort, die Claude bekommt.
+
 ## Variablen
 
 Alle Tagesvariablen werden beim Übernehmen der Konfiguration **automatisch archiviert** (Aggregationstyp *Standard*). Bereits geloggte Variablen werden nicht angefasst.
@@ -186,9 +267,17 @@ Der heutige Eintrag trägt dadurch die Schreibzeit statt 12:00. Der Timer **Kons
 | Importzeit Stunde / Minute (`FddbHour`, `FddbMinute`) | 3 / 30 | 0–23 / 0–59 | Wann der nächtliche Import startet. Nach 02:00, weil ein FDDB-Tag erst um 02:00 endet. |
 | Tage rückwirkend neu importieren (`FddbDaysBack`) | 3 | 1–14 | Wie viele Tage bis gestern jede Nacht neu gelesen werden (Nachträge). *Jetzt importieren* nimmt diese Tage plus heute. |
 
+### MCP-Server (Claude)
+
+| Parameter | Standard | Bereich | Wirkung |
+|---|---|---|---|
+| MCP-Server aktiv (`McpEnabled`) | ein | ein/aus | Aus = der Pfad `/hook/healthhub/mcp` antwortet mit 404. |
+| MCP-Token (`McpToken`) | zufällig (32 Hex-Zeichen) | Text | Wird beim ersten Übernehmen erzeugt. Claude sendet es als `Authorization: Bearer <Token>`. Getrennt vom Health-Connect-Token. *MCP-Token neu generieren* macht das alte sofort ungültig, danach Claude Code/Desktop neu einrichten. |
+| Max. Zeitraum pro Abfrage (`McpMaxDays`) | 366 Tage | 7–366 | Längste erlaubte Spanne `from`–`to`. Größere Anfragen beantwortet das Tool mit einer Fehlermeldung, die Claude selbst korrigiert (Zeitraum aufteilen). |
+
 ### Ziele
 
-Die Ziele werden in Phase 4 über das MCP-Tool `get_profile` an Claude geliefert, damit die Bewertung ohne Erklärung funktioniert.
+Die Ziele liefert das MCP-Tool `get_profile` an Claude, damit die Bewertung ohne Erklärung funktioniert.
 
 | Parameter | Standard | Bereich | Wirkung |
 |---|---|---|---|
@@ -230,12 +319,14 @@ Erlaubt sind 30–250 cm, keine Zukunftsdaten. Ein erneuter Eintrag für denselb
 | `HH_FddbImportRange(int $InstanceID, string $From, string $To): string` | Reiht einen Zeitraum (`JJJJ-MM-TT`, max. 400 Tage, nicht in der Zukunft) zum Import ein. |
 | `HH_FddbNightly(int $InstanceID)` / `HH_FddbWorker(int $InstanceID)` | Interne Timer: nächtlicher Lauf bzw. Abarbeiten der Warteschlange. |
 | `HH_CheckSystem(int $InstanceID): string` | Zeigt PHP-Version, ob `pdo_sqlite`, `dom` und `curl` vorhanden sind, und das Datenverzeichnis. |
+| `HH_McpTest(int $InstanceID, string $Tool, string $ArgumentsJson): string` | Führt ein MCP-Tool lokal aus (ohne Token) und liefert die JSON-Antwort, z. B. `echo HH_McpTest(12345, 'get_weekly_summary', '{"from":"2026-09-15","to":"2026-10-19"}');` |
+| `HH_RegenerateMcpToken(int $InstanceID)` | Neues MCP-Token erzeugen. |
 | `HH_ProcessPending(int $InstanceID)` | Interner Timer: entfernt die 0-Einträge beim Logging-Start und wiederholt fehlgeschlagene Re-Aggregationen. Läuft nur, solange etwas ansteht. |
 | `HH_SelfTestArchive(int $InstanceID): string` | Prüft die Schreibstrategie auf diesem System mit einer temporären, versteckten Variable und liefert einen Bericht. Zeigt auch das Roh-Verhalten von `SetValue` + `AC_AddLoggedValues`. Startet das Archiv zweimal neu (Logging an/aus), daher nicht im laufenden Betrieb dauernd ausführen. |
 
 ## Entwicklung / Tests
 
-Die reine Logik (`libs/DayClock.php`, `libs/ArchiveWriter.php`, `libs/HcIngest.php`, `libs/HookAuth.php`, `libs/FddbParser.php`, `libs/FddbClient.php`, `libs/FoodStore.php`, `libs/FddbImport.php`) ist frei von IPS-Funktionen und mit PHPUnit getestet. Die IPS-Anbindung steckt in `HHIpsArchiveBackend`.
+Die reine Logik (`libs/DayClock.php`, `libs/ArchiveWriter.php`, `libs/HcIngest.php`, `libs/HookAuth.php`, `libs/FddbParser.php`, `libs/FddbClient.php`, `libs/FoodStore.php`, `libs/FddbImport.php`, `libs/McpServer.php`, `libs/McpTools.php`) ist frei von IPS-Funktionen und mit PHPUnit getestet. Die IPS-Anbindung steckt in `HHIpsArchiveBackend`.
 
 ```bash
 php phpunit.phar

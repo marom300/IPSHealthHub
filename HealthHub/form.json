@@ -159,6 +159,47 @@
         },
         {
             "type": "ExpansionPanel",
+            "caption": "MCP server (Claude)",
+            "items": [
+                {
+                    "type": "CheckBox",
+                    "name": "McpEnabled",
+                    "caption": "MCP server active"
+                },
+                {
+                    "type": "Label",
+                    "name": "McpUrl",
+                    "caption": "MCP URL"
+                },
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        {
+                            "type": "ValidationTextBox",
+                            "name": "McpToken",
+                            "caption": "MCP token",
+                            "width": "350px"
+                        },
+                        {
+                            "type": "Button",
+                            "caption": "Regenerate MCP token",
+                            "onClick": "HH_RegenerateMcpToken($id);",
+                            "confirm": "Claude Code / Claude Desktop must be reconfigured with the new token. Continue?"
+                        }
+                    ]
+                },
+                {
+                    "type": "NumberSpinner",
+                    "name": "McpMaxDays",
+                    "caption": "Max. range per request",
+                    "suffix": " Tage",
+                    "minimum": 7,
+                    "maximum": 366
+                }
+            ]
+        },
+        {
+            "type": "ExpansionPanel",
             "caption": "Goals",
             "items": [
                 {
@@ -364,6 +405,73 @@
                 {
                     "type": "Label",
                     "caption": "Save the settings first. A range import runs in the background (about 1-2 s per day), progress is shown in the Status variable."
+                }
+            ]
+        },
+        {
+            "type": "ExpansionPanel",
+            "caption": "MCP test",
+            "items": [
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        {
+                            "type": "Select",
+                            "name": "McpTestTool",
+                            "caption": "Tool",
+                            "value": "get_weekly_summary",
+                            "options": [
+                                {
+                                    "caption": "get_profile",
+                                    "value": "get_profile"
+                                },
+                                {
+                                    "caption": "get_daily_overview",
+                                    "value": "get_daily_overview"
+                                },
+                                {
+                                    "caption": "get_nutrition",
+                                    "value": "get_nutrition"
+                                },
+                                {
+                                    "caption": "get_food_entries",
+                                    "value": "get_food_entries"
+                                },
+                                {
+                                    "caption": "get_food_stats",
+                                    "value": "get_food_stats"
+                                },
+                                {
+                                    "caption": "get_meal_pattern",
+                                    "value": "get_meal_pattern"
+                                },
+                                {
+                                    "caption": "get_body",
+                                    "value": "get_body"
+                                },
+                                {
+                                    "caption": "get_activity",
+                                    "value": "get_activity"
+                                },
+                                {
+                                    "caption": "get_weekly_summary",
+                                    "value": "get_weekly_summary"
+                                }
+                            ]
+                        },
+                        {
+                            "type": "ValidationTextBox",
+                            "name": "McpTestArgs",
+                            "caption": "Arguments (JSON)",
+                            "width": "450px",
+                            "value": "{\"from\":\"2026-09-15\",\"to\":\"2026-10-19\"}"
+                        },
+                        {
+                            "type": "Button",
+                            "caption": "Run",
+                            "onClick": "echo HH_McpTest($id, $McpTestTool, $McpTestArgs);"
+                        }
+                    ]
                 }
             ]
         },

@@ -91,7 +91,19 @@
             "FDDB login OK. Today: %s, %d entries, %s kcal": "FDDB-Login OK. Heute: %s, %d Einträge, %s kcal",
             "FDDB test failed": "FDDB-Test fehlgeschlagen",
             "FDDB user name or password missing": "FDDB-Benutzername oder Passwort fehlt",
-            "%d day(s) queued - progress in the Status variable": "%d Tag(e) eingereiht – Fortschritt in der Status-Variable"
+            "%d day(s) queued - progress in the Status variable": "%d Tag(e) eingereiht – Fortschritt in der Status-Variable",
+            "MCP server (Claude)": "MCP-Server (Claude)",
+            "MCP server active": "MCP-Server aktiv",
+            "MCP URL": "MCP-URL",
+            "MCP URL: %s - header: Authorization: Bearer <MCP token>": "MCP-URL: %s – Header: Authorization: Bearer <MCP-Token>",
+            "MCP token": "MCP-Token",
+            "Regenerate MCP token": "MCP-Token neu generieren",
+            "Claude Code / Claude Desktop must be reconfigured with the new token. Continue?": "Claude Code / Claude Desktop müssen mit dem neuen Token neu eingerichtet werden. Fortfahren?",
+            "Max. range per request": "Max. Zeitraum pro Abfrage",
+            "MCP test": "MCP-Test",
+            "Tool": "Tool",
+            "Arguments (JSON)": "Argumente (JSON)",
+            "Run": "Ausführen"
         }
     }
 }
