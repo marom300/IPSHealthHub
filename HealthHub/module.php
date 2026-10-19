@@ -595,13 +595,14 @@ class HealthHub extends IPSModule
         $this->rememberOrigins($stats['origins']);
         $this->SetValue('LastIngest', time());
         $this->updateStatusText(sprintf(
-            'Ingest %s: %d new, %d duplicate, %d ignored, %d too old, %d partial day',
+            'Ingest %s: %d new, %d duplicate, %d ignored, %d too old, %d partial day, %d HR points',
             date('d.m. H:i'),
             $stats['accepted'],
             $stats['duplicates'],
             $stats['ignored'],
             $stats['too_old'],
-            $stats['partial']
+            $stats['partial'],
+            $stats['hr_points']
         ));
         $this->SendDebug('Ingest', json_encode(['stats' => $stats, 'written' => $written]), 0);
 
@@ -612,6 +613,7 @@ class HealthHub extends IPSModule
             'ignored'      => $stats['ignored'],
             'too_old'      => $stats['too_old'],
             'partial'      => $stats['partial'],
+            'hr_points'    => $stats['hr_points'],
             'unused_types' => $stats['unused_types'],
             'written'      => $written,
         ];

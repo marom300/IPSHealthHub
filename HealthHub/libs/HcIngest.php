@@ -59,6 +59,12 @@ class HHHcIngest
         'sleep'              => ['ident' => 'SleepMinutes', 'kind' => 'sleep', 'field' => 'duration_seconds', 'group' => 'activity', 'range' => [0, 1440], 'digits' => 0],
     ];
 
+    /** Heart rate points are only buffered this long (needed to derive the resting heart rate). */
+    private const HR_KEEP_SECONDS = 3 * 86400;
+    /** Resting heart rate = lowest mean over this window during sleep. */
+    private const RHR_WINDOW = 300;
+    private const RHR_MIN_POINTS = 3;
+
     /** Health Connect sleep stages that are not sleep: AWAKE (1), OUT_OF_BED (3), AWAKE_IN_BED (7). */
     private const SLEEP_AWAKE_STAGES = ['1', '3', '7'];
 
@@ -104,19 +110,34 @@ class HHHcIngest
         $today = $this->clock->today();
         $oldest = $this->clock->addDays($today, -($this->keepDays - 1));
         $days = isset($state['days']) && is_array($state['days']) ? $state['days'] : [];
+        $hr = isset($state['hr']) && is_array($state['hr']) ? $state['hr'] : [];
+        $hrDays = [];
 
-        $stats = ['accepted' => 0, 'duplicates' => 0, 'ignored' => 0, 'too_old' => 0, 'partial' => 0, 'unused_types' => [], 'origins' => [], 'errors' => [], 'test' => false];
+        $stats = ['accepted' => 0, 'duplicates' => 0, 'ignored' => 0, 'too_old' => 0, 'partial' => 0, 'hr_points' => 0, 'unused_types' => [], 'origins' => [], 'errors' => [], 'test' => false];
         $touched = [];
 
         // The app's "Test webhook" button sends realistic MOCK data flagged with "test": true.
         // It must never end up in the archive.
         if (($payload['test'] ?? false) === true) {
             $stats['test'] = true;
-            return ['state' => ['days' => $days], 'touched' => [], 'stats' => $stats];
+            return ['state' => ['days' => $days, 'hr' => $hr], 'touched' => [], 'stats' => $stats];
         }
 
         foreach ($payload as $type => $records) {
             if (!is_array($records) || $type === 'metadata') {
+                continue;
+            }
+            if ($type === 'heart_rate') {
+                foreach ($records as $rec) {
+                    $point = is_array($rec) ? $this->parseHeartRate($rec) : null;
+                    if ($point === null) {
+                        continue;
+                    }
+                    [$minute, $bpm] = $point;
+                    $hr[(string) $minute] = $bpm;
+                    $hrDays[$this->clock->dayOf($minute)] = true;
+                    $stats['hr_points']++;
+                }
                 continue;
             }
             if (!isset(self::TYPES[$type])) {
@@ -142,7 +163,7 @@ class HHHcIngest
                     $stats['too_old']++;
                     continue;
                 }
-                if ($this->isPartialDailyAggregate($row, $day)) {
+                if ($def['kind'] === 'interval' && $this->isPartialDailyAggregate($row, $day)) {
                     $stats['partial']++; // first day of a sync window, counted only from mid-day
                     continue;
                 }
@@ -189,6 +210,31 @@ class HHHcIngest
             }
         }
 
+        // resting heart rate from the heart rate during sleep (no source writes it to Health Connect).
+        // Night heart rate of day D belongs to the wake-up day D+1.
+        $rhrDays = array_keys($touched['SleepMinutes'] ?? []);
+        foreach (array_keys($hrDays) as $d) {
+            $rhrDays[] = $d;
+            $rhrDays[] = $this->clock->addDays($d, 1);
+        }
+        foreach (array_unique($rhrDays) as $day) {
+            if ($day < $oldest || $day > $today || !isset($days[$day]['sleep'])) {
+                continue;
+            }
+            $value = $this->deriveRestingHr($days[$day]['sleep'], $hr);
+            if ($value !== null && ($days[$day]['rhr_derived'] ?? null) !== $value) {
+                $days[$day]['rhr_derived'] = $value;
+                $touched['RestingHR'][$day] = true;
+            }
+        }
+        $cut = $this->clock->now() - self::HR_KEEP_SECONDS;
+        foreach (array_keys($hr) as $minute) {
+            if ((int) $minute < $cut) {
+                unset($hr[$minute]);
+            }
+        }
+        ksort($hr);
+
         // drop days outside the retention window
         foreach (array_keys($days) as $day) {
             if ($day < $oldest) {
@@ -204,7 +250,7 @@ class HHHcIngest
             sort($list);
             $touchedDays[$ident] = $list;
         }
-        return ['state' => ['days' => $days], 'touched' => $touchedDays, 'stats' => $stats];
+        return ['state' => ['days' => $days, 'hr' => $hr], 'touched' => $touchedDays, 'stats' => $stats];
     }
 
     /**
@@ -219,7 +265,13 @@ class HHHcIngest
         $def = self::TYPES[$type];
         $records = $state['days'][$day][$type] ?? [];
         if (count($records) === 0) {
-            return $ident === 'LeanMass' ? $this->deriveLeanMass($state, $day) : null;
+            if ($ident === 'LeanMass') {
+                return $this->deriveLeanMass($state, $day);
+            }
+            if ($ident === 'RestingHR') {
+                return $state['days'][$day]['rhr_derived'] ?? null;
+            }
+            return null;
         }
 
         $groups = [];
@@ -335,6 +387,73 @@ class HHHcIngest
     }
 
     /**
+     * Heart rate record -> [minute timestamp, bpm]. Aggregates (N-minute buckets) carry
+     * avg/min/max - the bucket average is used; raw samples carry bpm only.
+     * Only the preferred activity sources are kept (all, if none configured).
+     */
+    private function parseHeartRate(array $rec): ?array
+    {
+        $origin = strtolower(trim((string) ($rec['metadata']['data_origin'] ?? '')));
+        $preferred = $this->preferred['activity'];
+        if ($origin !== '' && count($preferred) > 0 && !in_array($origin, $preferred, true)) {
+            return null;
+        }
+        $t = self::parseTime($rec['time'] ?? null);
+        $bpm = $rec['avg'] ?? $rec['bpm'] ?? null;
+        if ($t === null || !is_numeric($bpm) || $bpm < 25 || $bpm > 220) {
+            return null;
+        }
+        return [intdiv($t, 60) * 60, round((float) $bpm, 1)];
+    }
+
+    /**
+     * Resting heart rate of a wake-up day: lowest mean heart rate over RHR_WINDOW
+     * during the sleep sessions of that day (source as for sleep). A single minute
+     * would be too sensitive to watch artefacts.
+     */
+    private function deriveRestingHr(array $sleepRows, array $hr): ?int
+    {
+        $groups = [];
+        foreach ($sleepRows as $r) {
+            $groups[$r['o']][] = $r;
+        }
+        $origin = $this->pickOrigin($groups, self::TYPES['sleep']);
+        $points = [];
+        foreach ($groups[$origin] as $session) {
+            $start = $session['s'] ?? (int) ($session['e'] - $session['v'] * 60);
+            foreach ($hr as $minute => $bpm) {
+                if ((int) $minute >= $start && (int) $minute <= $session['e']) {
+                    $points[(int) $minute] = $bpm;
+                }
+            }
+        }
+        if (count($points) < self::RHR_MIN_POINTS) {
+            return null;
+        }
+        ksort($points);
+        $times = array_keys($points);
+        $values = array_values($points);
+        $best = null;
+        $n = count($times);
+        for ($i = 0; $i < $n; $i++) {
+            $sum = 0.0;
+            $cnt = 0;
+            for ($j = $i; $j < $n && $times[$j] < $times[$i] + self::RHR_WINDOW; $j++) {
+                $sum += $values[$j];
+                $cnt++;
+            }
+            if ($cnt >= self::RHR_MIN_POINTS) {
+                $mean = $sum / $cnt;
+                $best = $best === null ? $mean : min($best, $mean);
+            }
+        }
+        if ($best === null || $best < 30 || $best > 120) {
+            return null;
+        }
+        return (int) round($best);
+    }
+
+    /**
      * A Health Connect daily aggregate (no source) that starts after local midnight and
      * runs to the end of the day only covers part of it: the first day of a sync window.
      */
@@ -383,7 +502,7 @@ class HHHcIngest
                     return null;
                 }
                 // wake-up day; key without duration: an updated session replaces the old one
-                return [$this->clock->dayOf($e), $e . '|' . $origin, ['o' => $origin, 'v' => round($minutes, 1), 'e' => $e]];
+                return [$this->clock->dayOf($e), $e . '|' . $origin, ['o' => $origin, 'v' => round($minutes, 1), 's' => $e - (int) $duration, 'e' => $e]];
         }
         return null;
     }

@@ -35,7 +35,7 @@ Brücke Handy → IPS ist die Open-Source-App **HC Webhook** ([GitHub](https://g
 6. **Sync Now** drücken. Im Webhook-Log der App muss `200` stehen, in IPS ändern sich *Letzter Health-Connect-Empfang* und *Status*.
 7. Im Formular unter **Gesehene Health-Connect-Quellen** stehen jetzt die Paketnamen aller Quell-Apps. Bei Bedarf als bevorzugte Quelle eintragen (siehe Konfiguration). Bekannte Paketnamen: Fitdays-Waage `cn.fitdays.fitdays`, Pixel Watch / Fitbit `com.fitbit.FitbitMobile` (schreibt auch manuell eingetragene Gewichte). Schritte und Aktivkalorien kommen als Health-Connect-Tagessumme ohne Quelle.
 
-Nur diese 9 Datentypen in der App aktivieren (Berechtigungen **und** Webhook-Auswahl): Schritte, Schlaf, Aktive Kalorien, Ruheherzfrequenz, Gewicht, Körperfett, Magere Körpermasse, Körperwassermasse, Knochenmasse. Herzfrequenz & Co. bringen sehr viele Einzelwerte, die das Modul nicht nutzt.
+Diese 10 Datentypen in der App aktivieren (Berechtigungen **und** Webhook-Auswahl): Schritte, Schlaf, Aktive Kalorien, **Herzfrequenz** (für den Ruhepuls), Ruheherzfrequenz, Gewicht, Körperfett, Magere Körpermasse, Körperwassermasse, Knochenmasse. Andere Typen (HRV, Sauerstoff, Distanz …) bringen nur Daten, die das Modul nicht nutzt.
 
 **Rückwirkend:** Die App liest im Hintergrund ein rollierendes 48-h-Fenster und schickt nur Neues. Für ältere Tage in der App eine **manuelle Synchronisierung mit Zeitraum** auslösen. Das Modul nimmt Tage bis *Records puffern für* (Standard 14 Tage) zurück an. Für eine größere Nachbefüllung den Wert vorübergehend erhöhen (max. 120).
 
@@ -46,14 +46,16 @@ Nur diese 9 Datentypen in der App aktivieren (Berechtigungen **und** Webhook-Aus
 | Health-Connect-Typ | Variable | Regel pro Tag |
 |---|---|---|
 | `weight`, `body_fat`, `lean_body_mass`, `body_water_mass`, `bone_mass` | Gewicht, Körperfett, magere Masse, Körperwasser, Knochenmasse | Messung nach Regel *Mehrere Körpermessungen pro Tag* (Standard: Median der ersten Sitzung) |
-| `resting_heart_rate` | Ruhepuls | letzter Wert des Tages |
+| `resting_heart_rate`, sonst `heart_rate` + `sleep` | Ruhepuls | gelieferter Wert (letzter des Tages), sonst **berechnet** aus der Herzfrequenz im Schlaf (siehe unten) |
 | `steps` | Schritte | Summe, siehe unten |
 | `active_calories` | Aktivkalorien (Uhr) | Summe, siehe unten. **Uhrschätzung, vermutlich 30–50 % zu hoch, nicht fürs Kalorienziel.** |
 | `sleep` | Schlafdauer | Summe aller Sitzungen, die an diesem Tag **enden** (Aufwachtag), ohne Wachphasen (Stages *awake*, *out of bed*, *awake in bed*). Ohne Stages zählt die ganze Sitzung. |
 
 **Magere Masse berechnet:** Fitdays schreibt nur Gewicht, Körperfett und Knochenmasse nach Health Connect, **keine** magere Masse und **kein** Körperwasser (verifiziert an echten Payloads, Okt. 2026). Fehlt `lean_body_mass` an einem Tag, berechnet das Modul sie aus **derselben** Messung: Gewicht × (1 − Körperfett/100), mit Gewicht und Körperfett gleicher Quelle und gleichem Zeitpunkt (±60 s). Das entspricht der fettfreien Masse in Fitdays. Kommt doch eine echte `lean_body_mass`, hat sie Vorrang. Körperwasser bleibt leer.
 
-**Ruhepuls:** Die Fitbit-/Google-Health-App der Pixel Watch schreibt (Stand Okt. 2026) keine Ruheherzfrequenz nach Health Connect. Die Variable bleibt leer, bis eine Quelle sie liefert.
+**Ruhepuls berechnet:** Die Fitbit-/Google-Health-App der Pixel Watch schreibt (Stand Okt. 2026) keine Ruheherzfrequenz nach Health Connect, wohl aber die laufende Herzfrequenz. Das Modul nimmt deshalb den **niedrigsten 5-Minuten-Durchschnitt der Herzfrequenz während der Schlafsitzungen** eines Aufwachtags (mind. 3 Messpunkte im Fenster, Ergebnis 30–120 bpm). Ein einzelner Minutenwert wäre zu anfällig für Messfehler der Uhr. Quelle wie beim Schlaf (bevorzugte Aktivitätsquelle). Liefert irgendwann eine App eine echte `resting_heart_rate`, hat diese Vorrang. Herzfrequenz-Punkte (je Minute einer) werden nur **3 Tage** gepuffert. Kommt der Schlaf erst später als die Herzfrequenz, wird der Ruhepuls nachträglich berechnet, solange die Punkte noch da sind. Bei einer Synchronisierung mit Zeitraum kommt beides gemeinsam und wird für alle Tage berechnet.
+
+**Körperwasser:** Fitdays zeigt es in der App, schreibt es aber nicht nach Health Connect (dort fehlt der Eintrag „Gesamtkörperwasser“ unter *Daten und Zugriff*). Die Variable bleibt leer.
 
 **Angeschnittener erster Tag:** Bei jeder Synchronisierung beginnt das Fenster mitten an einem Tag (z. B. 12:10 vor 30 Tagen). Die Health-Connect-Tagessumme dieses Tages zählt nur ab dann und wird verworfen (`partial` im Status). Die Tagessumme von heute (ab 00:00 bis jetzt) zählt normal.
 
@@ -68,7 +70,7 @@ Andere Typen (z. B. Herzfrequenz, Distanz) werden angenommen, aber ignoriert und
 2. sonst, nur bei Schritten/Aktivkalorien, die Health-Connect-Tagessumme (schon quellenübergreifend bereinigt),
 3. sonst die Quelle mit den meisten Datensätzen an dem Tag.
 
-**Antwort des Hooks:** `200 {"ok":true,"accepted":n,"duplicates":n,"ignored":n,"too_old":n,"partial":n,"unused_types":[…],"written":{…}}`. Fehlender oder falscher Token → `401`, kein POST → `405`, kein gültiges JSON → `400`.
+**Antwort des Hooks:** `200 {"ok":true,"accepted":n,"duplicates":n,"ignored":n,"too_old":n,"partial":n,"hr_points":n,"unused_types":[…],"written":{…}}`. Fehlender oder falscher Token → `401`, kein POST → `405`, kein gültiges JSON → `400`.
 
 ## Variablen
 
@@ -91,7 +93,7 @@ Alle Tagesvariablen werden beim Übernehmen der Konfiguration **automatisch arch
 | `Steps` | Schritte | Integer | `HH.steps` | Uhr |
 | `ActiveKcal` | Aktivkalorien (Uhr) | Float | `HH.kcal` | Uhr – nur gespeichert, **nicht** fürs Kalorienziel (Uhr schätzt ca. 30–50 % zu hoch) |
 | `SleepMinutes` | Schlafdauer | Integer | `HH.minutes` | Uhr, dem **Aufwachtag** zugeordnet |
-| `RestingHR` | Ruhepuls | Integer | `HH.bpm` | Uhr |
+| `RestingHR` | Ruhepuls | Integer | `HH.bpm` | Uhr, berechnet aus der Herzfrequenz im Schlaf |
 | `LastIngest` | Letzter Health-Connect-Empfang | Integer | `~UnixTimestamp` | Status, nicht archiviert |
 | `LastFddbImport` | Letzter FDDB-Import | Integer | `~UnixTimestamp` | Status, nicht archiviert |
 | `Status` | Status | String | – | Status, nicht archiviert |

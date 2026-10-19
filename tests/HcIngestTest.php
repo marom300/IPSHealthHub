@@ -229,12 +229,12 @@ final class HcIngestTest extends TestCase
                 ['kilograms' => 74, 'time' => self::iso('2026-09-01 06:00')],          // older than retention
                 'garbage',
             ],
-            'heart_rate' => [['bpm' => 70, 'time' => self::iso('2026-10-17 06:00')]],
+            'distance' => [['meters' => 500, 'start_time' => self::iso('2026-10-17 06:00'), 'end_time' => self::iso('2026-10-17 06:10')]],
         ]), []);
         $this->assertSame(0, $r['stats']['accepted']);
         $this->assertSame(5, $r['stats']['ignored']);
         $this->assertSame(1, $r['stats']['too_old']);
-        $this->assertSame(['heart_rate'], $r['stats']['unused_types']);
+        $this->assertSame(['distance'], $r['stats']['unused_types']);
         $this->assertSame([], $r['touched']);
     }
 
@@ -356,6 +356,94 @@ final class HcIngestTest extends TestCase
         $this->assertSame(['2026-10-11', '2026-10-12', '2026-10-17'], $r['touched']['Steps']);
     }
 
+    /** One heart rate aggregate per minute between two local times with a given bpm function. */
+    private static function hrSeries(string $from, string $to, callable $bpm): array
+    {
+        $out = [];
+        $t = new DateTimeImmutable($from, new DateTimeZone('Europe/Vienna'));
+        $end = new DateTimeImmutable($to, new DateTimeZone('Europe/Vienna'));
+        for ($i = 0; $t < $end; $t = $t->modify('+1 minute'), $i++) {
+            $v = $bpm($i);
+            $out[] = ['time' => $t->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z'), 'avg' => $v, 'min' => $v - 2, 'max' => $v + 2, 'bpm' => $v,
+                'metadata' => self::meta('com.fitbit.FitbitMobile')];
+        }
+        return $out;
+    }
+
+    private static function night(string $endLocal, int $minutes): array
+    {
+        return ['session_end_time' => self::iso($endLocal), 'duration_seconds' => $minutes * 60, 'stages' => [],
+            'metadata' => self::meta('com.fitbit.FitbitMobile')];
+    }
+
+    public function testRestingHeartRateDerivedFromSleep(): void
+    {
+        $p = $this->parser([], ['com.fitbit.FitbitMobile']);
+        // awake evening at 75, sleep 22:00-06:00 at 60 with a 10-minute dip to 52 around 03:00
+        // and a single artefact minute of 35 that must not win
+        $hr = array_merge(
+            self::hrSeries('2026-10-16 20:00', '2026-10-16 22:00', function () { return 75; }),
+            self::hrSeries('2026-10-16 22:00', '2026-10-17 06:00', function ($i) {
+                if ($i >= 300 && $i < 310) {
+                    return 52;
+                }
+                return $i === 100 ? 35 : 60;
+            }),
+            self::hrSeries('2026-10-17 06:00', '2026-10-17 08:00', function () { return 80; })
+        );
+        $r = $p->ingest($this->payload([
+            'heart_rate' => $hr,
+            'sleep' => [self::night('2026-10-17 06:00', 480)],
+        ]), []);
+        $this->assertSame(['2026-10-17'], $r['touched']['RestingHR']);
+        $this->assertSame(52, $p->computeDay($r['state'], '2026-10-17', 'RestingHR'));
+        $this->assertGreaterThan(0, $r['stats']['hr_points']);
+        $this->assertSame([], $r['stats']['unused_types']);
+    }
+
+    public function testRestingHeartRateWhenSleepArrivesLater(): void
+    {
+        $p = $this->parser();
+        $r = $p->ingest($this->payload([
+            'heart_rate' => self::hrSeries('2026-10-16 23:00', '2026-10-17 06:00', function () { return 58; }),
+        ]), []);
+        $this->assertArrayNotHasKey('RestingHR', $r['touched'], 'no sleep yet');
+
+        $r = $p->ingest($this->payload(['sleep' => [self::night('2026-10-17 06:00', 420)]]), $r['state']);
+        $this->assertSame(['2026-10-17'], $r['touched']['RestingHR']);
+        $this->assertSame(58, $p->computeDay($r['state'], '2026-10-17', 'RestingHR'));
+    }
+
+    public function testDeliveredRestingHeartRateWinsAndOldHrIsPruned(): void
+    {
+        $p = $this->parser();
+        $r = $p->ingest($this->payload([
+            'heart_rate' => self::hrSeries('2026-10-16 23:00', '2026-10-17 06:00', function () { return 58; }),
+            'sleep' => [self::night('2026-10-17 06:00', 420)],
+            'resting_heart_rate' => [['bpm' => 55, 'time' => self::iso('2026-10-17 07:00'), 'metadata' => self::meta('w')]],
+        ]), []);
+        $this->assertSame(55, $p->computeDay($r['state'], '2026-10-17', 'RestingHR'));
+
+        $this->setNow('2026-10-21 12:00:00');
+        $r = $p->ingest($this->payload([]), $r['state']);
+        $this->assertSame([], $r['state']['hr'], 'heart rate older than 3 days dropped');
+        $this->assertSame(55, $p->computeDay($r['state'], '2026-10-17', 'RestingHR'), 'derived/real day values stay');
+    }
+
+    public function testHeartRateFromOtherSourceIsIgnoredWhenPreferred(): void
+    {
+        $p = $this->parser([], ['com.fitbit.FitbitMobile']);
+        $phone = array_map(function ($r) {
+            $r['metadata'] = self::meta('com.other.app');
+            return $r;
+        }, self::hrSeries('2026-10-16 23:00', '2026-10-17 06:00', function () { return 40; }));
+        $r = $p->ingest($this->payload([
+            'heart_rate' => array_merge($phone, self::hrSeries('2026-10-16 23:00', '2026-10-17 06:00', function () { return 57; })),
+            'sleep' => [self::night('2026-10-17 06:00', 420)],
+        ]), []);
+        $this->assertSame(57, $p->computeDay($r['state'], '2026-10-17', 'RestingHR'));
+    }
+
     public function testAppTestPayloadIsIgnored(): void
     {
         $p = $this->parser();
@@ -366,7 +454,7 @@ final class HcIngestTest extends TestCase
         $this->assertTrue($r['stats']['test']);
         $this->assertSame(0, $r['stats']['accepted']);
         $this->assertSame([], $r['touched']);
-        $this->assertSame(['days' => ['2026-10-15' => ['weight' => []]]], $r['state'], 'state unchanged');
+        $this->assertSame(['days' => ['2026-10-15' => ['weight' => []]], 'hr' => []], $r['state'], 'state unchanged');
     }
 
     public function testLocalTimestampsWithOffset(): void
