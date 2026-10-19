@@ -123,6 +123,13 @@ class HealthHub extends IPSModule
         }
         $this->EnableAction('Waist');
 
+        // Fitdays does not export body water to Health Connect: keep the variable hidden
+        // until a value has ever been written (writeDaily shows it again)
+        $waterId = $this->GetIDForIdent('BodyWater');
+        if (IPS_GetVariable($waterId)['VariableUpdated'] === 0 && !IPS_GetObject($waterId)['ObjectIsHidden']) {
+            IPS_SetHidden($waterId, true);
+        }
+
         $this->RegisterVariableInteger('LastIngest', $this->Translate('Last Health Connect ingest'), '~UnixTimestamp', 90);
         $this->RegisterVariableInteger('LastFddbImport', $this->Translate('Last FDDB import'), '~UnixTimestamp', 91);
         $this->RegisterVariableString('Status', $this->Translate('Status'), '', 92);
@@ -530,7 +537,11 @@ class HealthHub extends IPSModule
             }
         }
         $writer = new HHArchiveWriter($this->backend($archiveId), $this->clock());
-        $stats = $writer->writeDays($this->GetIDForIdent($ident), $values);
+        $varId = $this->GetIDForIdent($ident);
+        if ($ident === 'BodyWater' && IPS_GetObject($varId)['ObjectIsHidden'] && count(array_filter($values, 'is_numeric')) > 0) {
+            IPS_SetHidden($varId, false); // a source finally delivers body water
+        }
+        $stats = $writer->writeDays($varId, $values);
         $this->SendDebug('Write ' . $ident, json_encode($values) . ' -> ' . json_encode($stats), 0);
         return $stats;
     }
@@ -570,12 +581,12 @@ class HealthHub extends IPSModule
 
             $written = [];
             foreach ($result['touched'] as $ident => $days) {
+                // null = no (longer any) value for that day -> the writer deletes the day.
+                // Only possible for derived values (lean mass, resting heart rate): days of
+                // received types always have records.
                 $values = [];
                 foreach ($days as $day) {
-                    $v = $parser->computeDay($result['state'], $day, $ident);
-                    if ($v !== null) {
-                        $values[$day] = $v;
-                    }
+                    $values[$day] = $parser->computeDay($result['state'], $day, $ident);
                 }
                 if (count($values) > 0) {
                     $this->writeDaily($ident, $values);

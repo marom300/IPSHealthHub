@@ -414,6 +414,24 @@ final class HcIngestTest extends TestCase
         $this->assertSame(58, $p->computeDay($r['state'], '2026-10-17', 'RestingHR'));
     }
 
+    public function testRestingHeartRateNeedsHalfTheNightCovered(): void
+    {
+        $p = $this->parser();
+        // 8 h sleep, heart rate only for the first 2 h
+        $r = $p->ingest($this->payload([
+            'heart_rate' => self::hrSeries('2026-10-16 22:00', '2026-10-17 00:00', function () { return 78; }),
+            'sleep' => [self::night('2026-10-17 06:00', 480)],
+        ]), []);
+        $this->assertNull($p->computeDay($r['state'], '2026-10-17', 'RestingHR'));
+        $this->assertArrayNotHasKey('RestingHR', $r['touched']);
+
+        // rest of the night arrives later -> now computed
+        $r = $p->ingest($this->payload([
+            'heart_rate' => self::hrSeries('2026-10-17 00:00', '2026-10-17 06:00', function () { return 55; }),
+        ]), $r['state']);
+        $this->assertSame(55, $p->computeDay($r['state'], '2026-10-17', 'RestingHR'));
+    }
+
     public function testDeliveredRestingHeartRateWinsAndOldHrIsPruned(): void
     {
         $p = $this->parser();

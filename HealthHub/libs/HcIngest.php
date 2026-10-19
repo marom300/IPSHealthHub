@@ -64,6 +64,8 @@ class HHHcIngest
     /** Resting heart rate = lowest mean over this window during sleep. */
     private const RHR_WINDOW = 300;
     private const RHR_MIN_POINTS = 3;
+    /** Heart rate must cover at least this share of the sleep minutes, else no resting heart rate. */
+    private const RHR_MIN_COVERAGE = 0.5;
 
     /** Health Connect sleep stages that are not sleep: AWAKE (1), OUT_OF_BED (3), AWAKE_IN_BED (7). */
     private const SLEEP_AWAKE_STAGES = ['1', '3', '7'];
@@ -222,10 +224,16 @@ class HHHcIngest
                 continue;
             }
             $value = $this->deriveRestingHr($days[$day]['sleep'], $hr);
-            if ($value !== null && ($days[$day]['rhr_derived'] ?? null) !== $value) {
-                $days[$day]['rhr_derived'] = $value;
-                $touched['RestingHR'][$day] = true;
+            $previous = $days[$day]['rhr_derived'] ?? null;
+            if ($value === $previous) {
+                continue;
             }
+            if ($value === null) {
+                unset($days[$day]['rhr_derived']); // night turned out to be too sparsely measured
+            } else {
+                $days[$day]['rhr_derived'] = $value;
+            }
+            $touched['RestingHR'][$day] = true;
         }
         $cut = $this->clock->now() - self::HR_KEEP_SECONDS;
         foreach (array_keys($hr) as $minute) {
@@ -419,15 +427,18 @@ class HHHcIngest
         }
         $origin = $this->pickOrigin($groups, self::TYPES['sleep']);
         $points = [];
+        $sleepMinutes = 0;
         foreach ($groups[$origin] as $session) {
             $start = $session['s'] ?? (int) ($session['e'] - $session['v'] * 60);
+            $sleepMinutes += max(0, ($session['e'] - $start) / 60);
             foreach ($hr as $minute => $bpm) {
                 if ((int) $minute >= $start && (int) $minute <= $session['e']) {
                     $points[(int) $minute] = $bpm;
                 }
             }
         }
-        if (count($points) < self::RHR_MIN_POINTS) {
+        // a night measured only partly (watch off, gaps) would give a misleading value
+        if (count($points) < self::RHR_MIN_POINTS || count($points) < $sleepMinutes * self::RHR_MIN_COVERAGE) {
             return null;
         }
         ksort($points);
