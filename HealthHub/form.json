@@ -104,6 +104,61 @@
         },
         {
             "type": "ExpansionPanel",
+            "caption": "FDDB import",
+            "items": [
+                {
+                    "type": "CheckBox",
+                    "name": "FddbEnabled",
+                    "caption": "Nightly import active"
+                },
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        {
+                            "type": "ValidationTextBox",
+                            "name": "FddbUser",
+                            "caption": "FDDB user name or e-mail",
+                            "width": "300px"
+                        },
+                        {
+                            "type": "PasswordTextBox",
+                            "name": "FddbPassword",
+                            "caption": "FDDB password",
+                            "width": "250px"
+                        }
+                    ]
+                },
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        {
+                            "type": "NumberSpinner",
+                            "name": "FddbHour",
+                            "caption": "Import time hour",
+                            "minimum": 0,
+                            "maximum": 23
+                        },
+                        {
+                            "type": "NumberSpinner",
+                            "name": "FddbMinute",
+                            "caption": "minute",
+                            "minimum": 0,
+                            "maximum": 59
+                        },
+                        {
+                            "type": "NumberSpinner",
+                            "name": "FddbDaysBack",
+                            "caption": "Re-import days back",
+                            "minimum": 1,
+                            "maximum": 14,
+                            "suffix": " Tage"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "ExpansionPanel",
             "caption": "Goals",
             "items": [
                 {
@@ -267,6 +322,53 @@
         },
         {
             "type": "ExpansionPanel",
+            "caption": "FDDB import",
+            "items": [
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        {
+                            "type": "Button",
+                            "caption": "Test login",
+                            "onClick": "echo HH_FddbTestLogin($id);"
+                        },
+                        {
+                            "type": "Button",
+                            "caption": "Import now",
+                            "onClick": "echo HH_FddbImportNow($id);"
+                        }
+                    ]
+                },
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        {
+                            "type": "ValidationTextBox",
+                            "name": "ImportFrom",
+                            "caption": "Import from (YYYY-MM-DD)",
+                            "value": ""
+                        },
+                        {
+                            "type": "ValidationTextBox",
+                            "name": "ImportTo",
+                            "caption": "to (YYYY-MM-DD)",
+                            "value": ""
+                        },
+                        {
+                            "type": "Button",
+                            "caption": "Import range",
+                            "onClick": "echo HH_FddbImportRange($id, $ImportFrom, $ImportTo);"
+                        }
+                    ]
+                },
+                {
+                    "type": "Label",
+                    "caption": "Save the settings first. A range import runs in the background (about 1-2 s per day), progress is shown in the Status variable."
+                }
+            ]
+        },
+        {
+            "type": "ExpansionPanel",
             "caption": "Waist circumference",
             "items": [
                 {
@@ -310,6 +412,11 @@
                     "type": "Button",
                     "caption": "Consolidate last days now",
                     "onClick": "HH_Consolidate($id); echo 'OK';"
+                },
+                {
+                    "type": "Button",
+                    "caption": "System check",
+                    "onClick": "echo HH_CheckSystem($id);"
                 }
             ]
         }

@@ -74,7 +74,24 @@
             "Archived body, activity and sleep values of this range are deleted (FDDB and waist stay). Continue?": "Archivierte Körper-, Aktivitäts- und Schlafwerte dieses Zeitraums werden gelöscht (FDDB und Bauchumfang bleiben). Fortfahren?",
             "Invalid date range, expected YYYY-MM-DD": "Ungültiger Zeitraum, erwartet JJJJ-MM-TT",
             "Date range too long (max. 400 days)": "Zeitraum zu lang (max. 400 Tage)",
-            "%d day value(s) deleted (%s to %s)": "%d Tageswert(e) gelöscht (%s bis %s)"
+            "%d day value(s) deleted (%s to %s)": "%d Tageswert(e) gelöscht (%s bis %s)",
+            "FDDB import": "FDDB-Import",
+            "Nightly import active": "Nächtlicher Import aktiv",
+            "FDDB user name or e-mail": "FDDB-Benutzername oder E-Mail",
+            "FDDB password": "FDDB-Passwort",
+            "Import time hour": "Importzeit Stunde",
+            "minute": "Minute",
+            "Re-import days back": "Tage rückwirkend neu importieren",
+            "Test login": "Login testen",
+            "Import now": "Jetzt importieren",
+            "Import from (YYYY-MM-DD)": "Importieren von (JJJJ-MM-TT)",
+            "Import range": "Zeitraum importieren",
+            "Save the settings first. A range import runs in the background (about 1-2 s per day), progress is shown in the Status variable.": "Vorher Einstellungen übernehmen. Ein Zeitraumimport läuft im Hintergrund (ca. 1–2 s pro Tag), der Fortschritt steht in der Status-Variable.",
+            "System check": "Systemprüfung",
+            "FDDB login OK. Today: %s, %d entries, %s kcal": "FDDB-Login OK. Heute: %s, %d Einträge, %s kcal",
+            "FDDB test failed": "FDDB-Test fehlgeschlagen",
+            "FDDB user name or password missing": "FDDB-Benutzername oder Passwort fehlt",
+            "%d day(s) queued - progress in the Status variable": "%d Tag(e) eingereiht – Fortschritt in der Status-Variable"
         }
     }
 }

@@ -6,6 +6,7 @@ require_once __DIR__ . '/libs/DayClock.php';
 require_once __DIR__ . '/libs/ArchiveWriter.php';
 require_once __DIR__ . '/libs/HcIngest.php';
 require_once __DIR__ . '/libs/HookAuth.php';
+require_once __DIR__ . '/libs/FddbImport.php';
 
 /**
  * HealthHub - IP-Symcon module
@@ -19,6 +20,8 @@ require_once __DIR__ . '/libs/HookAuth.php';
  *          waist input, nightly consolidation, archive self test.
  * Phase 2: Health Connect ingest WebHook (HC Webhook app), token auth,
  *          raw payload logging, de-duplication and daily aggregation.
+ * Phase 3: FDDB diary import (login + diary page per day), entries in SQLite,
+ *          day totals from the store, nightly timer, range import via work queue.
  */
 class HealthHub extends IPSModule
 {
@@ -43,6 +46,12 @@ class HealthHub extends IPSModule
     /** Initial-value purge: search window around logging start (s), and how long to keep looking (s). */
     private const PURGE_WINDOW = 120;
     private const PURGE_KEEP = 180;
+
+    /** FDDB import: days per worker tick, pause between requests (ms), worker interval (s), max. range. */
+    private const FDDB_DAYS_PER_TICK = 6;
+    private const FDDB_REQUEST_PAUSE_MS = 700;
+    private const FDDB_WORKER_INTERVAL = 2;
+    private const FDDB_MAX_RANGE = 400;
 
     /**
      * Daily variables: ident => [type, name, profile, position]
@@ -100,12 +109,25 @@ class HealthHub extends IPSModule
         $this->RegisterAttributeString('IngestState', '{"days":{}}');
         $this->RegisterAttributeString('SeenOrigins', '{}');         // type => origin => [count, last]
 
+        // --- FDDB import ---
+        $this->RegisterPropertyBoolean('FddbEnabled', false);
+        $this->RegisterPropertyString('FddbUser', '');
+        $this->RegisterPropertyString('FddbPassword', '');
+        $this->RegisterPropertyInteger('FddbHour', 3);
+        $this->RegisterPropertyInteger('FddbMinute', 30);
+        $this->RegisterPropertyInteger('FddbDaysBack', 3);
+        $this->RegisterAttributeString('FddbCookie', '');            // session cookie between runs
+        $this->RegisterAttributeString('FddbQueue', '[]');           // days still to import
+        $this->RegisterAttributeString('FddbRun', '{}');             // counters of the running import
+
         // --- internal queues (archive housekeeping) ---
         $this->RegisterAttributeString('PendingReaggregate', '[]');  // [varId, ...]
         $this->RegisterAttributeString('PendingPurge', '[]');        // [{id, ts}, ...]
 
         $this->RegisterTimer('Consolidate', 0, 'HH_Consolidate($_IPS[\'TARGET\']);');
         $this->RegisterTimer('Pending', 0, 'HH_ProcessPending($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('FddbNightly', 0, 'HH_FddbNightly($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('FddbWorker', 0, 'HH_FddbWorker($_IPS[\'TARGET\']);');
     }
 
     public function ApplyChanges()
@@ -169,7 +191,11 @@ class HealthHub extends IPSModule
             $this->RegisterMessage(0, IPS_KERNELSTARTED);
         }
         $this->scheduleConsolidation();
+        $this->scheduleFddb();
         $this->updatePendingTimer();
+        if (count(json_decode($this->ReadAttributeString('FddbQueue'), true) ?: []) > 0) {
+            $this->SetTimerInterval('FddbWorker', self::FDDB_WORKER_INTERVAL * 1000); // resume after restart
+        }
         $this->SetStatus(IS_ACTIVE);
     }
 
@@ -366,6 +392,167 @@ class HealthHub extends IPSModule
         $this->patchForm($form['elements'], $patches);
         $this->patchForm($form['actions'], $patches);
         return json_encode($form);
+    }
+
+    // ------------------------------------------------------------------
+    // FDDB import
+    // ------------------------------------------------------------------
+
+    /**
+     * Imports the last "days back" days plus today (button "Import now").
+     * HH_FddbImportNow(int $InstanceID)
+     */
+    public function FddbImportNow(): string
+    {
+        $clock = $this->clock();
+        $today = $clock->today();
+        $from = $clock->addDays($today, -$this->ReadPropertyInteger('FddbDaysBack'));
+        return $this->queueFddb($clock->daysBetween($from, $today));
+    }
+
+    /**
+     * Imports a date range (initial fill). Days are processed in the background in small
+     * batches; progress is shown in the Status variable.
+     * HH_FddbImportRange(int $InstanceID, string $From, string $To)
+     */
+    public function FddbImportRange(string $From, string $To): string
+    {
+        $clock = $this->clock();
+        if (!HHDayClock::isValidDay($From) || !HHDayClock::isValidDay($To) || $From > $To) {
+            return $this->Translate('Invalid date range, expected YYYY-MM-DD');
+        }
+        $To = min($To, $clock->today());
+        $days = $clock->daysBetween($From, $To);
+        if (count($days) > self::FDDB_MAX_RANGE) {
+            return $this->Translate('Date range too long (max. 400 days)');
+        }
+        return $this->queueFddb($days);
+    }
+
+    /**
+     * Checks login and reads today's diary page (no data is written).
+     * HH_FddbTestLogin(int $InstanceID)
+     */
+    public function FddbTestLogin(): string
+    {
+        try {
+            $client = $this->fddbClient('');
+            $client->login();
+            $page = $client->fetchDay($this->clock()->today());
+            $this->WriteAttributeString('FddbCookie', $client->cookie());
+            $this->logFddbRaw($this->clock()->today(), $page['html'] ?? '');
+            return sprintf($this->Translate('FDDB login OK. Today: %s, %d entries, %s kcal'),
+                $page['status'], count($page['entries']), (string) ($page['totals']['kcal'] ?? '-'));
+        } catch (Throwable $e) {
+            return $this->Translate('FDDB test failed') . ': ' . $e->getMessage();
+        }
+    }
+
+    /** Timer target (daily): re-imports the last "days back" days up to yesterday. */
+    public function FddbNightly(): void
+    {
+        $this->scheduleFddb();
+        if (!$this->ReadPropertyBoolean('FddbEnabled')) {
+            return;
+        }
+        $clock = $this->clock();
+        $yesterday = $clock->addDays($clock->today(), -1);
+        $from = $clock->addDays($yesterday, -($this->ReadPropertyInteger('FddbDaysBack') - 1));
+        $this->queueFddb($clock->daysBetween($from, $yesterday));
+    }
+
+    /**
+     * Timer target: works off the import queue in small batches, so that a long
+     * range import never runs into the script time limit.
+     */
+    public function FddbWorker(): void
+    {
+        if (!IPS_SemaphoreEnter('HH_Fddb_' . $this->InstanceID, 0)) {
+            return; // previous tick still running
+        }
+        try {
+            $queue = json_decode($this->ReadAttributeString('FddbQueue'), true) ?: [];
+            if (count($queue) === 0) {
+                $this->SetTimerInterval('FddbWorker', 0);
+                return;
+            }
+            $run = json_decode($this->ReadAttributeString('FddbRun'), true) ?: [];
+            $run += ['total' => count($queue), 'ok' => 0, 'empty' => 0, 'entries' => 0];
+            $client = $this->fddbClient($this->ReadAttributeString('FddbCookie'));
+            $store = $this->foodStore();
+            $importedAt = date('c');
+            $batch = []; // ident => [day => value]
+            $started = microtime(true);
+            $done = 0;
+
+            while (count($queue) > 0 && $done < self::FDDB_DAYS_PER_TICK && microtime(true) - $started < 15) {
+                $day = $queue[0];
+                try {
+                    $r = HHFddbImport::importDay($client, $store, $day, $importedAt);
+                } catch (Throwable $e) {
+                    // abort the whole run: wrong credentials or a changed page would fail for every day
+                    $this->WriteAttributeString('FddbQueue', '[]');
+                    $this->WriteAttributeString('FddbRun', '{}');
+                    $this->WriteAttributeString('FddbCookie', '');
+                    $this->SetTimerInterval('FddbWorker', 0);
+                    $this->flushFddbBatch($batch);
+                    $this->updateStatusText('FDDB ' . date('d.m. H:i') . ': import failed at ' . $day . ' - ' . $e->getMessage());
+                    $this->SendDebug('FDDB', 'failed at ' . $day . ': ' . $e->getMessage(), 0);
+                    return;
+                }
+                array_shift($queue);
+                $this->logFddbRaw($day, $r['html']);
+                foreach ($r['values'] as $ident => $v) {
+                    $batch[$ident][$day] = $v;
+                }
+                $run[$r['status'] === HHFddbParser::STATUS_OK ? 'ok' : 'empty']++;
+                $run['entries'] += $r['entries'];
+                $this->SendDebug('FDDB', $day . ': ' . $r['status'] . ', ' . $r['entries'] . ' entries, ' . json_encode($r['values']), 0);
+                $done++;
+                if (count($queue) > 0) {
+                    IPS_Sleep(self::FDDB_REQUEST_PAUSE_MS); // be gentle with fddb.info
+                }
+            }
+
+            $this->flushFddbBatch($batch);
+            $this->WriteAttributeString('FddbCookie', $client->cookie());
+            $this->WriteAttributeString('FddbQueue', json_encode(array_values($queue)));
+
+            if (count($queue) === 0) {
+                $this->WriteAttributeString('FddbRun', '{}');
+                $this->SetTimerInterval('FddbWorker', 0);
+                $this->SetValue('LastFddbImport', time());
+                $this->updateStatusText(sprintf('FDDB %s: %d day(s) imported, %d without entries, %d entries (%s)',
+                    date('d.m. H:i'), $run['ok'], $run['empty'], $run['entries'], $store->backend()));
+            } else {
+                $this->WriteAttributeString('FddbRun', json_encode($run));
+                $this->SetTimerInterval('FddbWorker', self::FDDB_WORKER_INTERVAL * 1000);
+                $this->updateStatusText(sprintf('FDDB import running: %d of %d day(s) done', $run['total'] - count($queue), $run['total']));
+            }
+        } finally {
+            IPS_SemaphoreLeave('HH_Fddb_' . $this->InstanceID);
+        }
+    }
+
+    /**
+     * Reports what the embedded PHP offers (SQLite, DOM, cURL) and where data is stored.
+     * HH_CheckSystem(int $InstanceID)
+     */
+    public function CheckSystem(): string
+    {
+        $yes = function (bool $b) {
+            return $b ? 'yes' : 'NO';
+        };
+        $dir = $this->dataDir();
+        $lines = [
+            'PHP ' . PHP_VERSION,
+            'pdo_sqlite: ' . $yes(HHFoodStore::sqliteAvailable()) . (HHFoodStore::sqliteAvailable() ? '' : ' -> JSON fallback is used'),
+            'sqlite3: ' . $yes(extension_loaded('sqlite3')),
+            'dom (FDDB parser): ' . $yes(class_exists('DOMDocument')),
+            'curl (FDDB client): ' . $yes(function_exists('curl_init')),
+            'data directory: ' . $dir . ' (' . (is_dir($dir) ? (is_writable($dir) ? 'writable' : 'NOT writable') : 'created on first import') . ')',
+        ];
+        return implode("\n", $lines);
     }
 
     /**
@@ -710,6 +897,74 @@ class HealthHub extends IPSModule
         $hooks[] = ['Hook' => $hook, 'TargetID' => $this->InstanceID];
         IPS_SetProperty($hookId, 'Hooks', json_encode($hooks));
         IPS_ApplyChanges($hookId);
+    }
+
+    private function queueFddb(array $days): string
+    {
+        if ($this->ReadPropertyString('FddbUser') === '' || $this->ReadPropertyString('FddbPassword') === '') {
+            return $this->Translate('FDDB user name or password missing');
+        }
+        $queue = json_decode($this->ReadAttributeString('FddbQueue'), true) ?: [];
+        $queue = array_values(array_unique(array_merge($queue, $days)));
+        sort($queue);
+        $this->WriteAttributeString('FddbQueue', json_encode($queue));
+        $this->WriteAttributeString('FddbRun', json_encode(['total' => count($queue), 'ok' => 0, 'empty' => 0, 'entries' => 0]));
+        $this->SetTimerInterval('FddbWorker', 1000);
+        $this->updateStatusText(sprintf('FDDB import queued: %d day(s)', count($queue)));
+        return sprintf($this->Translate('%d day(s) queued - progress in the Status variable'), count($queue));
+    }
+
+    /** Writes the collected FDDB day values (one archive batch per variable). */
+    private function flushFddbBatch(array $batch): void
+    {
+        foreach ($batch as $ident => $values) {
+            $this->writeDaily($ident, $values);
+        }
+    }
+
+    private function fddbClient(string $cookie): HHFddbClient
+    {
+        return new HHFddbClient($this->clock(), $this->ReadPropertyString('FddbUser'), $this->ReadPropertyString('FddbPassword'), $cookie);
+    }
+
+    private function foodStore(bool $readOnly = false): HHFoodStore
+    {
+        return HHFoodStore::open($this->dataDir(), $readOnly);
+    }
+
+    /** <kernel dir>/HealthHub - food database, raw files. */
+    private function dataDir(): string
+    {
+        return rtrim(IPS_GetKernelDir(), '/\\') . DIRECTORY_SEPARATOR . 'HealthHub';
+    }
+
+    /** Debug mode: diary page as file (HealthHub/raw/fddb_<day>.html, overwritten per day). */
+    private function logFddbRaw(string $day, string $html): void
+    {
+        if (!$this->ReadPropertyBoolean('DebugMode') || $html === '') {
+            return;
+        }
+        $dir = $this->dataDir() . DIRECTORY_SEPARATOR . 'raw';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0777, true);
+        }
+        @file_put_contents($dir . DIRECTORY_SEPARATOR . 'fddb_' . $day . '.html', $html);
+    }
+
+    /** Sets the nightly FDDB timer to the next configured time (DST safe). */
+    private function scheduleFddb(): void
+    {
+        if (!$this->ReadPropertyBoolean('FddbEnabled')) {
+            $this->SetTimerInterval('FddbNightly', 0);
+            return;
+        }
+        $tz = $this->clock()->timeZone();
+        $now = new DateTimeImmutable('now', $tz);
+        $next = $now->setTime(max(0, min(23, $this->ReadPropertyInteger('FddbHour'))), max(0, min(59, $this->ReadPropertyInteger('FddbMinute'))));
+        if ($next <= $now) {
+            $next = $next->modify('+1 day');
+        }
+        $this->SetTimerInterval('FddbNightly', max(1, $next->getTimestamp() - $now->getTimestamp()) * 1000);
     }
 
     private function backend(int $archiveId): HHIpsArchiveBackend

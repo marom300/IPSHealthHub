@@ -4,12 +4,12 @@ Privates IP-Symcon-Modul, das Gesundheits- und Ernährungsdaten als **Tageswerte
 
 | Quelle | Weg | Werte |
 |---|---|---|
-| FDDB (Premium) | Web-Login + CSV-Export, nachts per Timer *(Phase 3)* | kcal, Protein, Fett, KH, Zucker, Ballaststoffe |
+| FDDB (Premium) | Web-Login + Tagebuchseite pro Tag, nachts per Timer | Einzeleinträge (SQLite) + kcal, Protein, Fett, KH, Zucker, Ballaststoffe |
 | Fitdays-Waage | Health Connect → App „HC Webhook“ → `/hook/healthhub/ingest` *(Phase 2)* | Gewicht, Körperfett, magere Masse, Wasser, Knochen |
 | Pixel Watch | Health Connect → HC Webhook *(Phase 2)* | Schritte, Aktivkalorien, Schlaf, Ruhepuls |
 | manuell | Variable / Formular / `HH_SetWaist` | Bauchumfang |
 
-> **Stand: Phase 2 (Health-Connect-Empfang)** – Grundgerüst (Variablen, Archivierung, idempotente Tageswerte, Bauchumfang) plus WebHook für die App „HC Webhook“ mit Token-Schutz, Roh-Logging, Deduplizierung und Tagesaggregation. FDDB und MCP folgen.
+> **Stand: Phase 3 (FDDB-Import)** – Grundgerüst, Health-Connect-Empfang (HC Webhook) und FDDB-Import mit Einzeleinträgen in SQLite. Der MCP-Server für Claude folgt in Phase 4.
 
 ## Installation
 
@@ -71,6 +71,38 @@ Andere Typen (z. B. Herzfrequenz, Distanz) werden angenommen, aber ignoriert und
 3. sonst die Quelle mit den meisten Datensätzen an dem Tag.
 
 **Antwort des Hooks:** `200 {"ok":true,"accepted":n,"duplicates":n,"ignored":n,"too_old":n,"partial":n,"hr_points":n,"unused_types":[…],"written":{…}}`. Fehlender oder falscher Token → `401`, kein POST → `405`, kein gültiges JSON → `400`.
+
+## FDDB-Import
+
+FDDB hat keine offizielle Schnittstelle. Das Modul meldet sich mit deinen Zugangsdaten auf fddb.info an und liest pro Tag die **Tagebuchseite** (`/db/i18n/myday20/`), so wie das Projekt [itobey/fddb-exporter](https://github.com/itobey/fddb-exporter).
+
+**Warum Tagebuchseite statt CSV-Export:** Die Tagebuchseite enthält pro Eintrag Uhrzeit, Mahlzeit, Produkt, Menge, kJ, kcal, Fett, Kohlenhydrate und Protein, dazu die Tagessummen inklusive Zucker, Ballaststoffe, Alkohol, Wasser, Cholesterin und Salz. Der CSV-Export ist laut itobey unvollständig.
+
+**Ablauf pro Tag:**
+1. Tagebuchseite laden. Ein FDDB-Tag läuft von 02:00 bis 01:59 Uhr des Folgetags.
+2. Ist die Sitzung abgelaufen, meldet sich das Modul einmal neu an.
+3. Alle Einträge des Tages in der Datenbank ersetzen (Transaktion, idempotent).
+4. Tageswerte **aus der Datenbank** lesen und ins Archiv schreiben.
+
+**Sonderfälle:**
+- Ein Tag ohne Einträge ist **kein 0-kcal-Tag**: Er wird aus Datenbank und Archiv entfernt.
+- Erkennt das Modul eine Seite nicht (Wartung, geändertes Layout), bricht der Lauf ab, ohne etwas zu ändern. Der Status zeigt den Fehler.
+
+**Zeitplan:**
+- Nächtlich zur eingestellten Zeit (Standard 03:30) werden die letzten *n* Tage bis gestern neu gelesen. So kommen Nachträge mit.
+- *Jetzt importieren* liest die letzten *n* Tage plus heute.
+- *Zeitraum importieren* (max. 400 Tage) für die Erstbefüllung läuft im Hintergrund in Häppchen von 6 Tagen, mit kurzer Pause zwischen den Abrufen. Der Fortschritt steht in *Status*. Ein IPS-Neustart setzt den Lauf fort.
+
+**Speicher:** `<IPS-Datenverzeichnis>/HealthHub/healthhub.sqlite`. Fehlt `pdo_sqlite` im IPS-PHP, schreibt das Modul JSON-Dateien pro Monat nach `HealthHub/food/`. Welcher Fall vorliegt, zeigt *Wartung → Systemprüfung*.
+
+| Tabelle | Inhalt |
+|---|---|
+| `food_entries` | `id`, `day`, `time`, `meal` (Breakfast, Lunch, Dinner, Snack 1…), `product`, `brand` (leer, FDDB liefert keine eigene Marke), `amount`, `unit`, `kj`, `kcal`, `protein`, `fat`, `carbs`, `sugar`/`fiber` (**leer**: die Tagebuchseite hat Zucker und Ballaststoffe nur als Tagessumme), `link` (Produktseite), `imported_at` |
+| `food_days` | FDDB-Tagessummen: `day`, `entries`, `kcal`, `kj`, `fat`, `carbs`, `sugar`, `protein`, `fiber`, `alcohol`, `water_l`, `cholesterol_mg`, `salt`, `imported_at` |
+
+Die Variablen *Kalorien gegessen*, *Protein*, *Fett*, *Kohlenhydrate*, *Zucker* und *Ballaststoffe* kommen aus `food_days`. Das sind dieselben Summen, die FDDB anzeigt.
+
+**Datenschutz:** Das FDDB-Passwort liegt als Instanz-Eigenschaft in der IPS-Konfiguration (`settings.json`), wie bei allen IPS-Modulen. Mit dem Debug-Modus landet jede Tagebuchseite als `HealthHub/raw/fddb_<Tag>.html` auf der Platte.
 
 ## Variablen
 
@@ -144,6 +176,16 @@ Der heutige Eintrag trägt dadurch die Schreibzeit statt 12:00. Der Timer **Kons
 | Mehrere Körpermessungen pro Tag (`MeasureRule`) | Erste Sitzung des Tages, Median | Sitzung-Median / erste / letzte / Mittelwert | Welche Waagen-Messung als Tageswert gilt. **Sitzung-Median** (Standard): alle Messungen bis 15 min nach der ersten Messung des Tages bilden die Morgen-Sitzung, davon zählt der Median (bei 2 Messungen der Mittelwert). Ein einzelner Ausreißer, z. B. mit Kleidung oder vor dem Einschwingen der Waage, fällt so heraus, spätere Messungen am Tag zählen nicht. *Erste* = erste Messung des Tages, *letzte* = letzte, *Mittelwert* = alle des Tages. Die berechnete magere Masse folgt derselben Regel. Bestehende Instanzen mit „Erste“ werden mit v0.6 einmalig auf Sitzung-Median umgestellt. |
 | Records puffern für (`IngestKeepDays`) | 14 Tage | 3–120 | Wie viele Tage empfangene Datensätze gepuffert werden. Ältere Datensätze werden abgelehnt (`too_old`), damit ein unvollständiger alter Tag keinen guten Archivwert überschreibt. Für eine einmalige Nachbefüllung erhöhen, danach zurückstellen (der Puffer liegt in einem Instanz-Attribut). |
 
+### FDDB-Import
+
+| Parameter | Standard | Bereich | Wirkung |
+|---|---|---|---|
+| Nächtlicher Import aktiv (`FddbEnabled`) | aus | ein/aus | Schaltet den täglichen Import ein. Die Buttons funktionieren auch ohne. |
+| FDDB-Benutzername oder E-Mail (`FddbUser`) | leer | Text | Login wie auf fddb.info. |
+| FDDB-Passwort (`FddbPassword`) | leer | Text | Wird verdeckt angezeigt. |
+| Importzeit Stunde / Minute (`FddbHour`, `FddbMinute`) | 3 / 30 | 0–23 / 0–59 | Wann der nächtliche Import startet. Nach 02:00, weil ein FDDB-Tag erst um 02:00 endet. |
+| Tage rückwirkend neu importieren (`FddbDaysBack`) | 3 | 1–14 | Wie viele Tage bis gestern jede Nacht neu gelesen werden (Nachträge). *Jetzt importieren* nimmt diese Tage plus heute. |
+
 ### Ziele
 
 Die Ziele werden in Phase 4 über das MCP-Tool `get_profile` an Claude geliefert, damit die Bewertung ohne Erklärung funktioniert.
@@ -183,12 +225,17 @@ Erlaubt sind 30–250 cm, keine Zukunftsdaten. Ein erneuter Eintrag für denselb
 | `HH_RegenerateIngestToken(int $InstanceID)` | Neuen Ingest-Token erzeugen, der alte gilt sofort nicht mehr. |
 | `HH_DeleteHealthConnectData(int $InstanceID, string $From, string $To): string` | Löscht für den Zeitraum (`JJJJ-MM-TT`) die archivierten Health-Connect-Werte (Körperwerte, Schritte, Aktivkalorien, Schlaf, Ruhepuls – **nicht** FDDB und Bauchumfang) und die gepufferten Datensätze dieser Tage. Auch als Button unter *Gesehene Health-Connect-Quellen*. Für Fehlimporte, danach in der App neu synchronisieren. |
 | `HH_ResetIngestState(int $InstanceID)` | Puffer der empfangenen Datensätze und die Quellenliste leeren. Archivwerte bleiben. |
+| `HH_FddbTestLogin(int $InstanceID): string` | Meldet sich bei FDDB an und liest die heutige Tagebuchseite, ohne zu speichern. Zeigt Einträge und kcal. |
+| `HH_FddbImportNow(int $InstanceID): string` | Reiht die letzten *n* Tage plus heute zum Import ein. |
+| `HH_FddbImportRange(int $InstanceID, string $From, string $To): string` | Reiht einen Zeitraum (`JJJJ-MM-TT`, max. 400 Tage, nicht in der Zukunft) zum Import ein. |
+| `HH_FddbNightly(int $InstanceID)` / `HH_FddbWorker(int $InstanceID)` | Interne Timer: nächtlicher Lauf bzw. Abarbeiten der Warteschlange. |
+| `HH_CheckSystem(int $InstanceID): string` | Zeigt PHP-Version, ob `pdo_sqlite`, `dom` und `curl` vorhanden sind, und das Datenverzeichnis. |
 | `HH_ProcessPending(int $InstanceID)` | Interner Timer: entfernt die 0-Einträge beim Logging-Start und wiederholt fehlgeschlagene Re-Aggregationen. Läuft nur, solange etwas ansteht. |
 | `HH_SelfTestArchive(int $InstanceID): string` | Prüft die Schreibstrategie auf diesem System mit einer temporären, versteckten Variable und liefert einen Bericht. Zeigt auch das Roh-Verhalten von `SetValue` + `AC_AddLoggedValues`. Startet das Archiv zweimal neu (Logging an/aus), daher nicht im laufenden Betrieb dauernd ausführen. |
 
 ## Entwicklung / Tests
 
-Die reine Logik (`libs/DayClock.php`, `libs/ArchiveWriter.php`, `libs/HcIngest.php`, `libs/HookAuth.php`) ist frei von IPS-Funktionen und mit PHPUnit getestet. Die IPS-Anbindung steckt in `HHIpsArchiveBackend`.
+Die reine Logik (`libs/DayClock.php`, `libs/ArchiveWriter.php`, `libs/HcIngest.php`, `libs/HookAuth.php`, `libs/FddbParser.php`, `libs/FddbClient.php`, `libs/FoodStore.php`, `libs/FddbImport.php`) ist frei von IPS-Funktionen und mit PHPUnit getestet. Die IPS-Anbindung steckt in `HHIpsArchiveBackend`.
 
 ```bash
 php phpunit.phar
@@ -200,4 +247,5 @@ Alle Klassen tragen das Präfix `HH`, weil sich alle Module einen PHP-Prozess te
 
 - HC Webhook schaut im Hintergrund nur **48 h** zurück. War das Handy länger offline oder die App gestoppt, fehlen Tage, bis man manuell mit Zeitraum synchronisiert.
 
-- FDDB-Export: Einträge aus **KI-FoodScan** und Rezepte aus dem FDDB-Rezeptbereich fehlen im CSV-Export (Phase 3).
+- FDDB: Laut Übergabe fehlen Einträge aus **KI-FoodScan** und Rezepte aus dem FDDB-Rezeptbereich im **CSV-Export**. Das Modul liest stattdessen die Tagebuchseite. Ob sie dort vollständig sind, ist noch zu prüfen: Summe in der FDDB-App mit *Kalorien gegessen* vergleichen.
+- FDDB: Bei einer Layout-Änderung von fddb.info bricht der Import mit Fehler im Status ab, statt falsche Werte zu schreiben. Dann muss der Parser (`libs/FddbParser.php`) angepasst werden.
