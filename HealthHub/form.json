@@ -90,7 +90,7 @@
                             "type": "NumberSpinner",
                             "name": "IngestKeepDays",
                             "caption": "Keep records for",
-                            "suffix": " days",
+                            "suffix": " Tage",
                             "minimum": 3,
                             "maximum": 120
                         }

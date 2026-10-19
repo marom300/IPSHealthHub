@@ -250,6 +250,59 @@ final class HcIngestTest extends TestCase
         $this->assertSame([], $r['state']['days']);
     }
 
+    public function testLeanMassDerivedFromSameMeasurement(): void
+    {
+        $fd = self::meta('cn.fitdays.fitdays');
+        $p = $this->parser(['cn.fitdays.fitdays']);
+        $r = $p->ingest($this->payload([
+            'weight' => [
+                ['kilograms' => 74.4, 'time' => self::iso('2026-10-17 05:16:44'), 'metadata' => $fd],
+                ['kilograms' => 72.5, 'time' => self::iso('2026-10-17 05:18:44'), 'metadata' => $fd],
+                ['kilograms' => 72.0, 'time' => self::iso('2026-10-17 04:00:00'), 'metadata' => self::meta('com.fitbit.FitbitMobile')],
+            ],
+            'body_fat' => [
+                ['percentage' => 21.6, 'time' => self::iso('2026-10-17 05:16:44'), 'metadata' => $fd],
+                ['percentage' => 20.0, 'time' => self::iso('2026-10-17 05:18:44'), 'metadata' => $fd],
+            ],
+        ]), []);
+        $this->assertSame(['2026-10-17'], $r['touched']['LeanMass']);
+        $this->assertSame(58.33, $p->computeDay($r['state'], '2026-10-17', 'LeanMass')); // 74.4 x 0.784
+        $this->assertSame(58.0, $this->parser(['cn.fitdays.fitdays'], [], 'last')->computeDay($r['state'], '2026-10-17', 'LeanMass'));
+
+        // delivered lean mass wins over the derived value
+        $r = $p->ingest($this->payload([
+            'lean_body_mass' => [['kilograms' => 58.1, 'time' => self::iso('2026-10-17 05:16:44'), 'metadata' => $fd]],
+        ]), $r['state']);
+        $this->assertSame(58.1, $p->computeDay($r['state'], '2026-10-17', 'LeanMass'));
+    }
+
+    public function testLeanMassNotDerivedWithoutMatchingWeight(): void
+    {
+        $p = $this->parser();
+        $r = $p->ingest($this->payload([
+            'weight' => [['kilograms' => 72.0, 'time' => self::iso('2026-10-17 04:00'), 'metadata' => self::meta('a')]],
+            'body_fat' => [['percentage' => 20.0, 'time' => self::iso('2026-10-17 06:00'), 'metadata' => self::meta('a')]],
+        ]), []);
+        $this->assertNull($p->computeDay($r['state'], '2026-10-17', 'LeanMass'));
+    }
+
+    public function testPartialFirstDayOfSyncWindowIsSkipped(): void
+    {
+        $p = $this->parser();
+        $r = $p->ingest($this->payload([
+            'steps' => [
+                ['count' => 7640, 'start_time' => self::iso('2026-10-10 12:10:00'), 'end_time' => self::iso('2026-10-11 00:00')],
+                ['count' => 4832, 'start_time' => self::iso('2026-10-11 00:00'), 'end_time' => self::iso('2026-10-12 00:00')],
+                // today so far: starts at midnight -> kept
+                ['count' => 2270, 'start_time' => self::iso('2026-10-17 00:00'), 'end_time' => self::iso('2026-10-17 12:10')],
+                // raw record with source mid-day -> kept
+                ['count' => 100, 'start_time' => self::iso('2026-10-12 12:00'), 'end_time' => self::iso('2026-10-13 00:00'), 'metadata' => self::meta('x')],
+            ],
+        ]), []);
+        $this->assertSame(1, $r['stats']['partial']);
+        $this->assertSame(['2026-10-11', '2026-10-12', '2026-10-17'], $r['touched']['Steps']);
+    }
+
     public function testAppTestPayloadIsIgnored(): void
     {
         $p = $this->parser();

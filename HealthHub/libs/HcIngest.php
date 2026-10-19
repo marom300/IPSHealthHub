@@ -100,7 +100,7 @@ class HHHcIngest
         $oldest = $this->clock->addDays($today, -($this->keepDays - 1));
         $days = isset($state['days']) && is_array($state['days']) ? $state['days'] : [];
 
-        $stats = ['accepted' => 0, 'duplicates' => 0, 'ignored' => 0, 'too_old' => 0, 'unused_types' => [], 'origins' => [], 'errors' => [], 'test' => false];
+        $stats = ['accepted' => 0, 'duplicates' => 0, 'ignored' => 0, 'too_old' => 0, 'partial' => 0, 'unused_types' => [], 'origins' => [], 'errors' => [], 'test' => false];
         $touched = [];
 
         // The app's "Test webhook" button sends realistic MOCK data flagged with "test": true.
@@ -137,6 +137,10 @@ class HHHcIngest
                     $stats['too_old']++;
                     continue;
                 }
+                if ($this->isPartialDailyAggregate($row, $day)) {
+                    $stats['partial']++; // first day of a sync window, counted only from mid-day
+                    continue;
+                }
                 $row['r'] = $receivedAt;
                 $origin = $row['o'] === '' ? '(health connect aggregate)' : $row['o'];
                 $stats['origins'][$type][$origin] = ($stats['origins'][$type][$origin] ?? 0) + 1;
@@ -148,6 +152,9 @@ class HHHcIngest
                 }
                 $days[$day][$type][$key] = $row;
                 $touched[$def['ident']][$day] = true;
+                if ($type === 'weight' || $type === 'body_fat') {
+                    $touched['LeanMass'][$day] = true; // may be derived from both
+                }
                 $stats['accepted']++;
             }
         }
@@ -207,7 +214,7 @@ class HHHcIngest
         $def = self::TYPES[$type];
         $records = $state['days'][$day][$type] ?? [];
         if (count($records) === 0) {
-            return null;
+            return $ident === 'LeanMass' ? $this->deriveLeanMass($state, $day) : null;
         }
 
         $groups = [];
@@ -257,6 +264,62 @@ class HHHcIngest
     }
 
     // ------------------------------------------------------------------
+
+    /**
+     * Fitdays writes weight and body fat but no lean body mass to Health Connect.
+     * Lean (fat-free) mass = weight x (1 - body fat / 100), taken from the SAME
+     * measurement (same time and source) that the body-fat rule selects.
+     */
+    private function deriveLeanMass(array $state, string $day): ?float
+    {
+        $fat = $state['days'][$day]['body_fat'] ?? [];
+        $weight = $state['days'][$day]['weight'] ?? [];
+        if (count($fat) === 0 || count($weight) === 0) {
+            return null;
+        }
+        $groups = [];
+        foreach ($fat as $r) {
+            $groups[$r['o']][] = $r;
+        }
+        $origin = $this->pickOrigin($groups, self::TYPES['body_fat']);
+        $rows = $groups[$origin];
+        usort($rows, static function ($a, $b) {
+            return $a['t'] <=> $b['t'];
+        });
+        $pairs = [];
+        foreach ($rows as $f) {
+            foreach ($weight as $w) {
+                if ($w['o'] === $f['o'] && abs($w['t'] - $f['t']) <= 60) {
+                    $pairs[] = $w['v'] * (1 - $f['v'] / 100);
+                    break;
+                }
+            }
+        }
+        if (count($pairs) === 0) {
+            return null;
+        }
+        if ($this->measureRule === self::RULE_LAST) {
+            $lean = $pairs[count($pairs) - 1];
+        } elseif ($this->measureRule === self::RULE_AVG) {
+            $lean = array_sum($pairs) / count($pairs);
+        } else {
+            $lean = $pairs[0];
+        }
+        return round($lean, self::TYPES['lean_body_mass']['digits']);
+    }
+
+    /**
+     * A Health Connect daily aggregate (no source) that starts after local midnight and
+     * runs to the end of the day only covers part of it: the first day of a sync window.
+     */
+    private function isPartialDailyAggregate(array $row, string $day): bool
+    {
+        if ($row['o'] !== '' || !isset($row['s'])) {
+            return false;
+        }
+        [$dayStart, $dayEnd] = $this->clock->dayRange($day);
+        return $row['s'] > $dayStart && $row['e'] >= $dayEnd && ($row['e'] - $row['s']) > 2 * 3600;
+    }
 
     /**
      * @return array|null [day, key, row] - row: o (origin), v (value), t | s+e

@@ -33,7 +33,9 @@ Brücke Handy → IPS ist die Open-Source-App **HC Webhook** ([GitHub](https://g
 4. Falls die App es anbietet: Auflösung für *Steps* und *Active Calories* auf **täglich** stellen. Dann liefert Health Connect fertige, quellenübergreifend bereinigte Tagessummen. Das Modul kommt aber auch mit Einzel- oder Minuten-Records zurecht.
 5. Akku-Optimierung für HC Webhook ausschalten, sonst verpasst Android Syncs.
 6. **Sync Now** drücken. Im Webhook-Log der App muss `200` stehen, in IPS ändern sich *Letzter Health-Connect-Empfang* und *Status*.
-7. Im Formular unter **Gesehene Health-Connect-Quellen** stehen jetzt die Paketnamen aller Quell-Apps. Bei Bedarf als bevorzugte Quelle eintragen (siehe Konfiguration).
+7. Im Formular unter **Gesehene Health-Connect-Quellen** stehen jetzt die Paketnamen aller Quell-Apps. Bei Bedarf als bevorzugte Quelle eintragen (siehe Konfiguration). Bekannte Paketnamen: Fitdays-Waage `cn.fitdays.fitdays`, Pixel Watch / Fitbit `com.fitbit.FitbitMobile` (schreibt auch manuell eingetragene Gewichte). Schritte und Aktivkalorien kommen als Health-Connect-Tagessumme ohne Quelle.
+
+Nur diese 9 Datentypen in der App aktivieren (Berechtigungen **und** Webhook-Auswahl): Schritte, Schlaf, Aktive Kalorien, Ruheherzfrequenz, Gewicht, Körperfett, Magere Körpermasse, Körperwassermasse, Knochenmasse. Herzfrequenz & Co. bringen sehr viele Einzelwerte, die das Modul nicht nutzt.
 
 **Rückwirkend:** Die App liest im Hintergrund ein rollierendes 48-h-Fenster und schickt nur Neues. Für ältere Tage in der App eine **manuelle Synchronisierung mit Zeitraum** auslösen. Das Modul nimmt Tage bis *Records puffern für* (Standard 14 Tage) zurück an. Für eine größere Nachbefüllung den Wert vorübergehend erhöhen (max. 120).
 
@@ -49,6 +51,12 @@ Brücke Handy → IPS ist die Open-Source-App **HC Webhook** ([GitHub](https://g
 | `active_calories` | Aktivkalorien (Uhr) | Summe, siehe unten. **Uhrschätzung, vermutlich 30–50 % zu hoch, nicht fürs Kalorienziel.** |
 | `sleep` | Schlafdauer | Summe aller Sitzungen, die an diesem Tag **enden** (Aufwachtag), ohne Wachphasen (Stages *awake*, *out of bed*, *awake in bed*). Ohne Stages zählt die ganze Sitzung. |
 
+**Magere Masse berechnet:** Fitdays schreibt nur Gewicht, Körperfett und Knochenmasse nach Health Connect, **keine** magere Masse und **kein** Körperwasser (verifiziert an echten Payloads, Okt. 2026). Fehlt `lean_body_mass` an einem Tag, berechnet das Modul sie aus **derselben** Messung: Gewicht × (1 − Körperfett/100), mit Gewicht und Körperfett gleicher Quelle und gleichem Zeitpunkt (±60 s). Das entspricht der fettfreien Masse in Fitdays. Kommt doch eine echte `lean_body_mass`, hat sie Vorrang. Körperwasser bleibt leer.
+
+**Ruhepuls:** Die Fitbit-/Google-Health-App der Pixel Watch schreibt (Stand Okt. 2026) keine Ruheherzfrequenz nach Health Connect. Die Variable bleibt leer, bis eine Quelle sie liefert.
+
+**Angeschnittener erster Tag:** Bei jeder Synchronisierung beginnt das Fenster mitten an einem Tag (z. B. 12:10 vor 30 Tagen). Die Health-Connect-Tagessumme dieses Tages zählt nur ab dann und wird verworfen (`partial` im Status). Die Tagessumme von heute (ab 00:00 bis jetzt) zählt normal.
+
 Andere Typen (z. B. Herzfrequenz, Distanz) werden angenommen, aber ignoriert und in der Antwort als `unused_types` gemeldet. Die Tageszuordnung erfolgt in der eingestellten Zeitzone.
 
 **Deduplizierung:** Die App schickt Datensätze wiederholt und überlappend, im JSON aber **ohne Record-ID**. Das Modul puffert daher alle Datensätze der letzten Tage (Schlüssel = Typ + Zeit/Intervall + Quell-App) und berechnet jeden betroffenen Tag aus dem kompletten Puffer neu. Beim Empfang wird nie aufaddiert. Dieselben Daten nochmal senden ändert nichts.
@@ -60,7 +68,7 @@ Andere Typen (z. B. Herzfrequenz, Distanz) werden angenommen, aber ignoriert und
 2. sonst, nur bei Schritten/Aktivkalorien, die Health-Connect-Tagessumme (schon quellenübergreifend bereinigt),
 3. sonst die Quelle mit den meisten Datensätzen an dem Tag.
 
-**Antwort des Hooks:** `200 {"ok":true,"accepted":n,"duplicates":n,"ignored":n,"too_old":n,"unused_types":[…],"written":{…}}`. Fehlender oder falscher Token → `401`, kein POST → `405`, kein gültiges JSON → `400`.
+**Antwort des Hooks:** `200 {"ok":true,"accepted":n,"duplicates":n,"ignored":n,"too_old":n,"partial":n,"unused_types":[…],"written":{…}}`. Fehlender oder falscher Token → `401`, kein POST → `405`, kein gültiges JSON → `400`.
 
 ## Variablen
 
