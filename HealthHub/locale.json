@@ -4,7 +4,7 @@
             "General": "Allgemein",
             "Archive instance (none = first Archive Control)": "Archiv-Instanz (leer = erstes Archive Control)",
             "Time zone (day boundaries)": "Zeitzone (Tagesgrenzen)",
-            "Debug mode (raw payloads into debug window / files, from phase 2)": "Debug-Modus (Roh-Payloads ins Debug-Fenster / als Datei, ab Phase 2)",
+            "Debug mode (raw payloads into debug window and HealthHub/raw files)": "Debug-Modus (Roh-Payloads ins Debug-Fenster und als Datei unter HealthHub/raw)",
             "Goals": "Ziele",
             "Calorie target": "Kalorienziel",
             "Protein target": "Proteinziel",
@@ -26,7 +26,6 @@
             "Invalid time zone": "Ungültige Zeitzone",
             "No archive instance found": "Keine Archiv-Instanz gefunden",
             "No archive instance found.": "Keine Archiv-Instanz gefunden.",
-
             "Calories eaten": "Kalorien gegessen",
             "Protein": "Protein",
             "Fat": "Fett",
@@ -45,10 +44,29 @@
             "Last Health Connect ingest": "Letzter Health-Connect-Empfang",
             "Last FDDB import": "Letzter FDDB-Import",
             "Status": "Status",
-
             "Invalid date, expected YYYY-MM-DD": "Ungültiges Datum, erwartet JJJJ-MM-TT",
             "Date must not be in the future": "Datum darf nicht in der Zukunft liegen",
-            "Waist must be between %d and %d cm": "Bauchumfang muss zwischen %d und %d cm liegen"
+            "Waist must be between %d and %d cm": "Bauchumfang muss zwischen %d und %d cm liegen",
+            "Health Connect ingest": "Health-Connect-Empfang",
+            "Webhook URL": "Webhook-URL",
+            "Webhook URL: %s - header: Authorization: Bearer <token>": "Webhook-URL: %s – Header: Authorization: Bearer <Token>",
+            "Token": "Token",
+            "Regenerate token": "Token neu generieren",
+            "The phone app stops working until the new token is entered there. Continue?": "Die Handy-App sendet erst wieder, wenn dort der neue Token eingetragen ist. Fortfahren?",
+            "Preferred sources body values (app package names, comma separated, empty = automatic)": "Bevorzugte Quellen Körperwerte (App-Paketnamen, kommagetrennt, leer = automatisch)",
+            "Preferred sources activity/sleep (app package names, comma separated, empty = automatic)": "Bevorzugte Quellen Aktivität/Schlaf (App-Paketnamen, kommagetrennt, leer = automatisch)",
+            "Several body measurements per day": "Mehrere Körpermessungen pro Tag",
+            "First of the day (morning, fasting)": "Erste des Tages (morgens nüchtern)",
+            "Last of the day": "Letzte des Tages",
+            "Average": "Mittelwert",
+            "Keep records for": "Records puffern für",
+            "Health Connect sources seen": "Gesehene Health-Connect-Quellen",
+            "Data type": "Datentyp",
+            "Source (data_origin)": "Quelle (data_origin)",
+            "Records": "Datensätze",
+            "Last received": "Zuletzt empfangen",
+            "Forget buffered records": "Gepufferte Datensätze verwerfen",
+            "Buffered Health Connect records are deleted (archive values stay). Continue?": "Gepufferte Health-Connect-Datensätze werden gelöscht (Archivwerte bleiben). Fortfahren?"
         }
     }
 }

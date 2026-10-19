@@ -9,7 +9,9 @@
                     "type": "SelectInstance",
                     "name": "ArchiveID",
                     "caption": "Archive instance (none = first Archive Control)",
-                    "validModules": ["{43192F0B-135B-4CE7-A0A7-1475603F3060}"]
+                    "validModules": [
+                        "{43192F0B-135B-4CE7-A0A7-1475603F3060}"
+                    ]
                 },
                 {
                     "type": "ValidationTextBox",
@@ -20,7 +22,79 @@
                 {
                     "type": "CheckBox",
                     "name": "DebugMode",
-                    "caption": "Debug mode (raw payloads into debug window / files, from phase 2)"
+                    "caption": "Debug mode (raw payloads into debug window and HealthHub/raw files)"
+                }
+            ]
+        },
+        {
+            "type": "ExpansionPanel",
+            "caption": "Health Connect ingest",
+            "items": [
+                {
+                    "type": "Label",
+                    "name": "IngestUrl",
+                    "caption": "Webhook URL"
+                },
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        {
+                            "type": "ValidationTextBox",
+                            "name": "IngestToken",
+                            "caption": "Token",
+                            "width": "350px"
+                        },
+                        {
+                            "type": "Button",
+                            "caption": "Regenerate token",
+                            "onClick": "HH_RegenerateIngestToken($id);",
+                            "confirm": "The phone app stops working until the new token is entered there. Continue?"
+                        }
+                    ]
+                },
+                {
+                    "type": "ValidationTextBox",
+                    "name": "BodySources",
+                    "caption": "Preferred sources body values (app package names, comma separated, empty = automatic)",
+                    "width": "700px"
+                },
+                {
+                    "type": "ValidationTextBox",
+                    "name": "ActivitySources",
+                    "caption": "Preferred sources activity/sleep (app package names, comma separated, empty = automatic)",
+                    "width": "700px"
+                },
+                {
+                    "type": "RowLayout",
+                    "items": [
+                        {
+                            "type": "Select",
+                            "name": "MeasureRule",
+                            "caption": "Several body measurements per day",
+                            "options": [
+                                {
+                                    "caption": "First of the day (morning, fasting)",
+                                    "value": "first"
+                                },
+                                {
+                                    "caption": "Last of the day",
+                                    "value": "last"
+                                },
+                                {
+                                    "caption": "Average",
+                                    "value": "avg"
+                                }
+                            ]
+                        },
+                        {
+                            "type": "NumberSpinner",
+                            "name": "IngestKeepDays",
+                            "caption": "Keep records for",
+                            "suffix": " days",
+                            "minimum": 3,
+                            "maximum": 120
+                        }
+                    ]
                 }
             ]
         },
@@ -31,25 +105,91 @@
                 {
                     "type": "RowLayout",
                     "items": [
-                        { "type": "NumberSpinner", "name": "KcalTarget", "caption": "Calorie target", "suffix": " kcal", "minimum": 800, "maximum": 5000 },
-                        { "type": "NumberSpinner", "name": "ProteinTarget", "caption": "Protein target", "suffix": " g", "minimum": 0, "maximum": 400 },
-                        { "type": "NumberSpinner", "name": "FatTarget", "caption": "Fat target", "suffix": " g", "minimum": 0, "maximum": 300 }
+                        {
+                            "type": "NumberSpinner",
+                            "name": "KcalTarget",
+                            "caption": "Calorie target",
+                            "suffix": " kcal",
+                            "minimum": 800,
+                            "maximum": 5000
+                        },
+                        {
+                            "type": "NumberSpinner",
+                            "name": "ProteinTarget",
+                            "caption": "Protein target",
+                            "suffix": " g",
+                            "minimum": 0,
+                            "maximum": 400
+                        },
+                        {
+                            "type": "NumberSpinner",
+                            "name": "FatTarget",
+                            "caption": "Fat target",
+                            "suffix": " g",
+                            "minimum": 0,
+                            "maximum": 300
+                        }
                     ]
                 },
                 {
                     "type": "RowLayout",
                     "items": [
-                        { "type": "NumberSpinner", "name": "PaceMin", "caption": "Target pace from", "suffix": " kg/week", "digits": 2, "minimum": -2, "maximum": 2 },
-                        { "type": "NumberSpinner", "name": "PaceMax", "caption": "to", "suffix": " kg/week", "digits": 2, "minimum": -2, "maximum": 2 }
+                        {
+                            "type": "NumberSpinner",
+                            "name": "PaceMin",
+                            "caption": "Target pace from",
+                            "suffix": " kg/week",
+                            "digits": 2,
+                            "minimum": -2,
+                            "maximum": 2
+                        },
+                        {
+                            "type": "NumberSpinner",
+                            "name": "PaceMax",
+                            "caption": "to",
+                            "suffix": " kg/week",
+                            "digits": 2,
+                            "minimum": -2,
+                            "maximum": 2
+                        }
                     ]
                 },
                 {
                     "type": "RowLayout",
                     "items": [
-                        { "type": "ValidationTextBox", "name": "StartDate", "caption": "Start date (YYYY-MM-DD)", "validate": "^\\d{4}-\\d{2}-\\d{2}$" },
-                        { "type": "NumberSpinner", "name": "StartWeight", "caption": "Start weight", "suffix": " kg", "digits": 1, "minimum": 0, "maximum": 300 },
-                        { "type": "NumberSpinner", "name": "StartBodyFat", "caption": "Start body fat", "suffix": " %", "digits": 1, "minimum": 0, "maximum": 70 },
-                        { "type": "NumberSpinner", "name": "StartLeanMass", "caption": "Start lean mass", "suffix": " kg", "digits": 1, "minimum": 0, "maximum": 200 }
+                        {
+                            "type": "ValidationTextBox",
+                            "name": "StartDate",
+                            "caption": "Start date (YYYY-MM-DD)",
+                            "validate": "^\\d{4}-\\d{2}-\\d{2}$"
+                        },
+                        {
+                            "type": "NumberSpinner",
+                            "name": "StartWeight",
+                            "caption": "Start weight",
+                            "suffix": " kg",
+                            "digits": 1,
+                            "minimum": 0,
+                            "maximum": 300
+                        },
+                        {
+                            "type": "NumberSpinner",
+                            "name": "StartBodyFat",
+                            "caption": "Start body fat",
+                            "suffix": " %",
+                            "digits": 1,
+                            "minimum": 0,
+                            "maximum": 70
+                        },
+                        {
+                            "type": "NumberSpinner",
+                            "name": "StartLeanMass",
+                            "caption": "Start lean mass",
+                            "suffix": " kg",
+                            "digits": 1,
+                            "minimum": 0,
+                            "maximum": 200
+                        }
                     ]
                 }
             ]
@@ -58,14 +198,74 @@
     "actions": [
         {
             "type": "ExpansionPanel",
+            "caption": "Health Connect sources seen",
+            "items": [
+                {
+                    "type": "List",
+                    "name": "SeenOrigins",
+                    "rowCount": 8,
+                    "add": false,
+                    "delete": false,
+                    "columns": [
+                        {
+                            "caption": "Data type",
+                            "name": "Type",
+                            "width": "180px"
+                        },
+                        {
+                            "caption": "Source (data_origin)",
+                            "name": "Origin",
+                            "width": "auto"
+                        },
+                        {
+                            "caption": "Records",
+                            "name": "Count",
+                            "width": "90px"
+                        },
+                        {
+                            "caption": "Last received",
+                            "name": "Last",
+                            "width": "150px"
+                        }
+                    ],
+                    "values": []
+                },
+                {
+                    "type": "Button",
+                    "caption": "Forget buffered records",
+                    "onClick": "HH_ResetIngestState($id); echo 'OK';",
+                    "confirm": "Buffered Health Connect records are deleted (archive values stay). Continue?"
+                }
+            ]
+        },
+        {
+            "type": "ExpansionPanel",
             "caption": "Waist circumference",
             "items": [
                 {
                     "type": "RowLayout",
                     "items": [
-                        { "type": "NumberSpinner", "name": "WaistValue", "caption": "Waist", "suffix": " cm", "digits": 1, "minimum": 30, "maximum": 250, "value": 85 },
-                        { "type": "ValidationTextBox", "name": "WaistDate", "caption": "Date (empty = today)", "value": "" },
-                        { "type": "Button", "caption": "Save", "onClick": "if (HH_SetWaist($id, $WaistValue, $WaistDate)) { echo 'OK'; }" }
+                        {
+                            "type": "NumberSpinner",
+                            "name": "WaistValue",
+                            "caption": "Waist",
+                            "suffix": " cm",
+                            "digits": 1,
+                            "minimum": 30,
+                            "maximum": 250,
+                            "value": 85
+                        },
+                        {
+                            "type": "ValidationTextBox",
+                            "name": "WaistDate",
+                            "caption": "Date (empty = today)",
+                            "value": ""
+                        },
+                        {
+                            "type": "Button",
+                            "caption": "Save",
+                            "onClick": "if (HH_SetWaist($id, $WaistValue, $WaistDate)) { echo 'OK'; }"
+                        }
                     ]
                 }
             ]
@@ -88,8 +288,20 @@
         }
     ],
     "status": [
-        { "code": 102, "icon": "active", "caption": "Active" },
-        { "code": 201, "icon": "error", "caption": "Invalid time zone" },
-        { "code": 202, "icon": "error", "caption": "No archive instance found" }
+        {
+            "code": 102,
+            "icon": "active",
+            "caption": "Active"
+        },
+        {
+            "code": 201,
+            "icon": "error",
+            "caption": "Invalid time zone"
+        },
+        {
+            "code": 202,
+            "icon": "error",
+            "caption": "No archive instance found"
+        }
     ]
 }

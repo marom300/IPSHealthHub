@@ -9,13 +9,56 @@ Privates IP-Symcon-Modul, das Gesundheits- und Ernährungsdaten als **Tageswerte
 | Pixel Watch | Health Connect → HC Webhook *(Phase 2)* | Schritte, Aktivkalorien, Schlaf, Ruhepuls |
 | manuell | Variable / Formular / `HH_SetWaist` | Bauchumfang |
 
-> **Stand: Phase 1 (Grundgerüst)** – Variablen, Profile, automatische Archivierung, idempotentes Schreiben von Tageswerten, Bauchumfang-Eingabe, nächtliche Konsolidierung, Archiv-Selbsttest. Ingest, FDDB und MCP folgen.
+> **Stand: Phase 2 (Health-Connect-Empfang)** – Grundgerüst (Variablen, Archivierung, idempotente Tageswerte, Bauchumfang) plus WebHook für die App „HC Webhook“ mit Token-Schutz, Roh-Logging, Deduplizierung und Tagesaggregation. FDDB und MCP folgen.
 
 ## Installation
 
 1. Modul-Control → Bibliothek hinzufügen (Git-URL des Repos oder lokaler Ordner).
 2. Instanz **HealthHub** anlegen (Kategorie beliebig).
 3. Im Formular **Wartung → Archiv-Selbsttest** ausführen. Erwartet: `ARCHIVE SELF TEST PASSED`.
+4. Handy einrichten, siehe *Health Connect einrichten*.
+
+## Health Connect einrichten (HC Webhook)
+
+Brücke Handy → IPS ist die Open-Source-App **HC Webhook** ([GitHub](https://github.com/mcnaveen/health-connect-webhook), Play Store: *Health Connect Webhook*, Paket `com.hcwebhook.app`). Sie liest Health Connect und schickt JSON per POST an IPS.
+
+1. App installieren, **Grant Permissions** → mindestens diese Typen freigeben: *Steps, Sleep, Active Calories, Weight, Body Fat, Lean Body Mass, Body Water Mass, Bone Mass, Resting Heart Rate*.
+2. **Webhooks → hinzufügen**
+   - URL: `http://<IPS-IP>:3777/hook/healthhub/ingest` (genau so, Hooks sind case-sensitive)
+   - Format: **JSON** (nicht Protobuf/gRPC)
+   - Custom Header: `Authorization` = `Bearer <Token>`. Den Token zeigt das Instanzformular unter *Health-Connect-Empfang*.
+3. Sync-Modus: **Intervall** 30–60 min oder **Zeitplan** (z. B. 08:00 und 21:00).
+4. Falls die App es anbietet: Auflösung für *Steps* und *Active Calories* auf **täglich** stellen. Dann liefert Health Connect fertige, quellenübergreifend bereinigte Tagessummen. Das Modul kommt aber auch mit Einzel- oder Minuten-Records zurecht.
+5. Akku-Optimierung für HC Webhook ausschalten, sonst verpasst Android Syncs.
+6. **Sync Now** drücken. Im Webhook-Log der App muss `200` stehen, in IPS ändern sich *Letzter Health-Connect-Empfang* und *Status*.
+7. Im Formular unter **Gesehene Health-Connect-Quellen** stehen jetzt die Paketnamen aller Quell-Apps. Bei Bedarf als bevorzugte Quelle eintragen (siehe Konfiguration).
+
+**Rückwirkend:** Die App liest im Hintergrund ein rollierendes 48-h-Fenster und schickt nur Neues. Für ältere Tage in der App eine **manuelle Synchronisierung mit Zeitraum** auslösen. Das Modul nimmt Tage bis *Records puffern für* (Standard 14 Tage) zurück an. Für eine größere Nachbefüllung den Wert vorübergehend erhöhen (max. 120).
+
+**Nicht ins Internet freigeben.** Der Hook ist nur per Token geschützt, also nur im LAN oder per VPN nutzen. Ist **IP-Symcon Connect** aktiv, ist jeder `/hook/`-Pfad auch über die Connect-Adresse erreichbar. Dann schützt allein der Token.
+
+### Was mit den Daten passiert
+
+| Health-Connect-Typ | Variable | Regel pro Tag |
+|---|---|---|
+| `weight`, `body_fat`, `lean_body_mass`, `body_water_mass`, `bone_mass` | Gewicht, Körperfett, magere Masse, Körperwasser, Knochenmasse | Messung nach Regel *Mehrere Körpermessungen pro Tag* (Standard: erste) |
+| `resting_heart_rate` | Ruhepuls | letzter Wert des Tages |
+| `steps` | Schritte | Summe, siehe unten |
+| `active_calories` | Aktivkalorien (Uhr) | Summe, siehe unten. **Uhrschätzung, vermutlich 30–50 % zu hoch, nicht fürs Kalorienziel.** |
+| `sleep` | Schlafdauer | Summe aller Sitzungen, die an diesem Tag **enden** (Aufwachtag), ohne Wachphasen (Stages *awake*, *out of bed*, *awake in bed*). Ohne Stages zählt die ganze Sitzung. |
+
+Andere Typen (z. B. Herzfrequenz, Distanz) werden angenommen, aber ignoriert und in der Antwort als `unused_types` gemeldet. Die Tageszuordnung erfolgt in der eingestellten Zeitzone.
+
+**Deduplizierung:** Die App schickt Datensätze wiederholt und überlappend, im JSON aber **ohne Record-ID**. Das Modul puffert daher alle Datensätze der letzten Tage (Schlüssel = Typ + Zeit/Intervall + Quell-App) und berechnet jeden betroffenen Tag aus dem kompletten Puffer neu. Beim Empfang wird nie aufaddiert. Dieselben Daten nochmal senden ändert nichts.
+
+**Schritte/Aktivkalorien:** Pro Quelle werden Intervalle verworfen, die in einem größeren Intervall derselben Quelle enthalten sind. So ersetzt die wachsende Tagessumme von heute die ältere, und ein angeschnittener Tag am Fensteranfang überschreibt nicht den vollen Tag. Der Rest wird summiert.
+
+**Welche Quelle zählt:** Pro Tag und Variable genau **eine** Quelle, damit Handy und Uhr nicht doppelt zählen:
+1. die erste eingetragene bevorzugte Quelle, die an dem Tag Daten hat,
+2. sonst, nur bei Schritten/Aktivkalorien, die Health-Connect-Tagessumme (schon quellenübergreifend bereinigt),
+3. sonst die Quelle mit den meisten Datensätzen an dem Tag.
+
+**Antwort des Hooks:** `200 {"ok":true,"accepted":n,"duplicates":n,"ignored":n,"too_old":n,"unused_types":[…],"written":{…}}`. Fehlender oder falscher Token → `401`, kein POST → `405`, kein gültiges JSON → `400`.
 
 ## Variablen
 
@@ -77,7 +120,17 @@ Der heutige Eintrag trägt dadurch die Schreibzeit statt 12:00. Der Timer **Kons
 |---|---|---|---|
 | Archiv-Instanz (`ArchiveID`) | leer | Archive-Control-Instanz | In welches Archiv geloggt wird. Leer = erstes Archive Control im System (Normalfall). Nur ändern, wenn du mehrere Archive betreibst. |
 | Zeitzone (`TimeZone`) | `Europe/Vienna` | PHP-Zeitzonenname | Bestimmt Tagesgrenzen (00:00–23:59) und den 12:00-Zeitstempel. Ungültiger Name → Instanzstatus *Ungültige Zeitzone*, Timer aus. Nach Befüllung des Archivs **nicht mehr ändern**, sonst verschieben sich die Tagesgrenzen. |
-| Debug-Modus (`DebugMode`) | aus | ein/aus | Ab Phase 2: Roh-Payloads des Health-Connect-Webhooks ins Debug-Fenster und als Datei unter `<IPS-Datenverzeichnis>/HealthHub/raw/`. In Phase 1 noch ohne Wirkung. |
+| Debug-Modus (`DebugMode`) | aus | ein/aus | Jede empfangene Roh-Payload ins Debug-Fenster und als Datei `hc_<Datum>_<Zeit>_….json` unter `<IPS-Datenverzeichnis>/HealthHub/raw/` (die letzten 300 Dateien bleiben). Zum Einrichten und zur Fehlersuche einschalten, im Dauerbetrieb aus. |
+
+### Health-Connect-Empfang
+
+| Parameter | Standard | Bereich | Wirkung |
+|---|---|---|---|
+| Token (`IngestToken`) | zufällig (32 Hex-Zeichen) | Text | Wird beim ersten Übernehmen automatisch erzeugt. Muss in HC Webhook als Header `Authorization: Bearer <Token>` eingetragen sein. Ebenfalls akzeptiert: Basic Auth mit beliebigem Benutzer und dem Token als Passwort, oder Header `X-Api-Key: <Token>`. Leerer Token = alles wird abgewiesen. *Token neu generieren* erzeugt einen neuen, danach in der App nachtragen. |
+| Bevorzugte Quellen Körperwerte (`BodySources`) | leer | Paketnamen, kommagetrennt | Welche Quell-App für Gewicht, Körperfett, magere Masse, Körperwasser und Knochenmasse zählt, falls mehrere Apps diese Werte in Health Connect schreiben. Reihenfolge = Priorität. Paketnamen aus der Liste *Gesehene Health-Connect-Quellen* kopieren, z. B. den der Fitdays-App. Leer = automatisch (Quelle mit den meisten Messungen am Tag). |
+| Bevorzugte Quellen Aktivität/Schlaf (`ActivitySources`) | leer | Paketnamen, kommagetrennt | Wie oben für Schritte, Aktivkalorien, Schlaf und Ruhepuls, typischerweise die App der Pixel Watch (Google Health/Fitbit). Leer = automatisch (bei Schritten/Aktivkalorien die Health-Connect-Tagessumme). |
+| Mehrere Körpermessungen pro Tag (`MeasureRule`) | Erste des Tages | erste / letzte / Mittelwert | Welche Waagen-Messung als Tageswert gilt. *Erste* = morgens nüchtern, am besten vergleichbar. |
+| Records puffern für (`IngestKeepDays`) | 14 Tage | 3–120 | Wie viele Tage empfangene Datensätze gepuffert werden. Ältere Datensätze werden abgelehnt (`too_old`), damit ein unvollständiger alter Tag keinen guten Archivwert überschreibt. Für eine einmalige Nachbefüllung erhöhen, danach zurückstellen (der Puffer liegt in einem Instanz-Attribut). |
 
 ### Ziele
 
@@ -114,12 +167,15 @@ Erlaubt sind 30–250 cm, keine Zukunftsdaten. Ein erneuter Eintrag für denselb
 |---|---|
 | `HH_SetWaist(int $InstanceID, float $cm, string $date = ''): bool` | Bauchumfang für einen Tag speichern. |
 | `HH_Consolidate(int $InstanceID)` | Letzte 3 abgeschlossene Tage aller Tagesvariablen auf genau einen 12:00-Eintrag normalisieren (läuft automatisch täglich 00:10). |
+| `HH_IngestJson(int $InstanceID, string $Json): string` | Verarbeitet eine Payload wie der WebHook (ohne Token-Prüfung) und liefert das Ergebnis als JSON. Zum Testen ohne Handy, z. B. mit einer Datei aus `HealthHub/raw`: `echo HH_IngestJson(12345, file_get_contents('…json'));` |
+| `HH_RegenerateIngestToken(int $InstanceID)` | Neuen Ingest-Token erzeugen, der alte gilt sofort nicht mehr. |
+| `HH_ResetIngestState(int $InstanceID)` | Puffer der empfangenen Datensätze und die Quellenliste leeren. Archivwerte bleiben. |
 | `HH_ProcessPending(int $InstanceID)` | Interner Timer: entfernt die 0-Einträge beim Logging-Start und wiederholt fehlgeschlagene Re-Aggregationen. Läuft nur, solange etwas ansteht. |
 | `HH_SelfTestArchive(int $InstanceID): string` | Prüft die Schreibstrategie auf diesem System mit einer temporären, versteckten Variable und liefert einen Bericht. Zeigt auch das Roh-Verhalten von `SetValue` + `AC_AddLoggedValues`. Startet das Archiv zweimal neu (Logging an/aus), daher nicht im laufenden Betrieb dauernd ausführen. |
 
 ## Entwicklung / Tests
 
-Die reine Logik (`libs/DayClock.php`, `libs/ArchiveWriter.php`) ist frei von IPS-Funktionen und mit PHPUnit getestet. Die IPS-Anbindung steckt in `HHIpsArchiveBackend`.
+Die reine Logik (`libs/DayClock.php`, `libs/ArchiveWriter.php`, `libs/HcIngest.php`, `libs/HookAuth.php`) ist frei von IPS-Funktionen und mit PHPUnit getestet. Die IPS-Anbindung steckt in `HHIpsArchiveBackend`.
 
 ```bash
 php phpunit.phar
@@ -128,5 +184,7 @@ php phpunit.phar
 Alle Klassen tragen das Präfix `HH`, weil sich alle Module einen PHP-Prozess teilen und gleichnamige Klassen anderer Module sonst kollidieren.
 
 ## Bekannte Einschränkungen
+
+- HC Webhook schaut im Hintergrund nur **48 h** zurück. War das Handy länger offline oder die App gestoppt, fehlen Tage, bis man manuell mit Zeitraum synchronisiert.
 
 - FDDB-Export: Einträge aus **KI-FoodScan** und Rezepte aus dem FDDB-Rezeptbereich fehlen im CSV-Export (Phase 3).

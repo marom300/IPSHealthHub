@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/libs/DayClock.php';
 require_once __DIR__ . '/libs/ArchiveWriter.php';
+require_once __DIR__ . '/libs/HcIngest.php';
+require_once __DIR__ . '/libs/HookAuth.php';
 
 /**
  * HealthHub - IP-Symcon module
@@ -15,6 +17,8 @@ require_once __DIR__ . '/libs/ArchiveWriter.php';
  *
  * Phase 1: variables, profiles, archiving, idempotent ArchiveWriter,
  *          waist input, nightly consolidation, archive self test.
+ * Phase 2: Health Connect ingest WebHook (HC Webhook app), token auth,
+ *          raw payload logging, de-duplication and daily aggregation.
  */
 class HealthHub extends IPSModule
 {
@@ -22,6 +26,10 @@ class HealthHub extends IPSModule
 
     private const STATUS_INVALID_TZ = 201;
     private const STATUS_NO_ARCHIVE = 202;
+
+    private const HOOK_INGEST = '/hook/healthhub/ingest';
+    /** Raw payload files kept in <kernel dir>/HealthHub/raw */
+    private const RAW_KEEP_FILES = 300;
 
     private const WAIST_MIN = 30.0;
     private const WAIST_MAX = 250.0;
@@ -82,6 +90,15 @@ class HealthHub extends IPSModule
         $this->RegisterPropertyFloat('StartBodyFat', 21.4);
         $this->RegisterPropertyFloat('StartLeanMass', 58.2);
 
+        // --- Health Connect ingest ---
+        $this->RegisterPropertyString('IngestToken', '');            // generated on first ApplyChanges
+        $this->RegisterPropertyString('BodySources', '');            // preferred data_origin(s), comma separated
+        $this->RegisterPropertyString('ActivitySources', '');
+        $this->RegisterPropertyString('MeasureRule', HHHcIngest::RULE_FIRST);
+        $this->RegisterPropertyInteger('IngestKeepDays', 14);
+        $this->RegisterAttributeString('IngestState', '{"days":{}}');
+        $this->RegisterAttributeString('SeenOrigins', '{}');         // type => origin => [count, last]
+
         // --- internal queues (archive housekeeping) ---
         $this->RegisterAttributeString('PendingReaggregate', '[]');  // [varId, ...]
         $this->RegisterAttributeString('PendingPurge', '[]');        // [{id, ts}, ...]
@@ -109,6 +126,12 @@ class HealthHub extends IPSModule
         $this->RegisterVariableInteger('LastFddbImport', $this->Translate('Last FDDB import'), '~UnixTimestamp', 91);
         $this->RegisterVariableString('Status', $this->Translate('Status'), '', 92);
 
+        if ($this->ReadPropertyString('IngestToken') === '') {
+            IPS_SetProperty($this->InstanceID, 'IngestToken', HHHookAuth::newToken());
+            IPS_ApplyChanges($this->InstanceID);
+            return;
+        }
+
         if (!$this->isValidTimeZone($this->ReadPropertyString('TimeZone'))) {
             $this->SetTimerInterval('Consolidate', 0);
             $this->SetStatus(self::STATUS_INVALID_TZ);
@@ -123,6 +146,7 @@ class HealthHub extends IPSModule
         // the archive may not be ready during kernel start-up
         if (IPS_GetKernelRunlevel() == KR_READY) {
             $this->enableArchiving();
+            $this->registerHook(self::HOOK_INGEST);
         } else {
             $this->RegisterMessage(0, IPS_KERNELSTARTED);
         }
@@ -135,6 +159,7 @@ class HealthHub extends IPSModule
     {
         if ($Message == IPS_KERNELSTARTED && $this->archiveId() > 0) {
             $this->enableArchiving();
+            $this->registerHook(self::HOOK_INGEST);
         }
     }
 
@@ -202,6 +227,83 @@ class HealthHub extends IPSModule
             }
         }
         $this->SendDebug('Consolidate', $changed . ' day(s) normalised', 0);
+    }
+
+    /**
+     * WebHook entry point (WebHook Control calls this for registered hooks).
+     */
+    public function ProcessHookData()
+    {
+        $hook = (string) ($_SERVER['HOOK'] ?? parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH));
+        if (rtrim($hook, '/') !== self::HOOK_INGEST) {
+            $this->respond(404, ['ok' => false, 'error' => 'unknown hook']);
+            return;
+        }
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            header('Allow: POST');
+            $this->respond(405, ['ok' => false, 'error' => 'POST only']);
+            return;
+        }
+        if (!HHHookAuth::isAuthorized($_SERVER, $this->ReadPropertyString('IngestToken'))) {
+            $this->SendDebug('Ingest', 'rejected: invalid or missing token from ' . ($_SERVER['REMOTE_ADDR'] ?? '?'), 0);
+            header('WWW-Authenticate: Bearer');
+            $this->respond(401, ['ok' => false, 'error' => 'unauthorized']);
+            return;
+        }
+        $result = $this->ingest((string) file_get_contents('php://input'));
+        $this->respond($result['ok'] ? 200 : 400, $result);
+    }
+
+    /**
+     * Processes a payload like the WebHook would - for tests without the phone,
+     * e.g. with a raw file from <kernel dir>/HealthHub/raw.
+     * HH_IngestJson(int $InstanceID, string $Json)
+     */
+    public function IngestJson(string $Json): string
+    {
+        return json_encode($this->ingest($Json), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    }
+
+    /** Creates a new ingest token (old one stops working immediately). */
+    public function RegenerateIngestToken(): void
+    {
+        IPS_SetProperty($this->InstanceID, 'IngestToken', HHHookAuth::newToken());
+        IPS_ApplyChanges($this->InstanceID);
+        $this->ReloadForm();
+    }
+
+    /** Forgets the buffered Health Connect records (archive data stays untouched). */
+    public function ResetIngestState(): void
+    {
+        $this->WriteAttributeString('IngestState', '{"days":{}}');
+        $this->WriteAttributeString('SeenOrigins', '{}');
+        $this->ReloadForm();
+    }
+
+    public function GetConfigurationForm()
+    {
+        $form = json_decode(file_get_contents(__DIR__ . '/form.json'), true);
+
+        // sources seen so far -> helps to fill in the preferred sources
+        $rows = [];
+        foreach (json_decode($this->ReadAttributeString('SeenOrigins'), true) ?: [] as $type => $origins) {
+            foreach ($origins as $origin => $info) {
+                $rows[] = [
+                    'Type'   => $type,
+                    'Origin' => $origin,
+                    'Count'  => (int) $info[0],
+                    'Last'   => date('d.m.Y H:i', (int) $info[1]),
+                ];
+            }
+        }
+        $url = 'http://<IPS-IP>:3777' . self::HOOK_INGEST;
+        $patches = [
+            'IngestUrl'   => ['caption' => sprintf($this->Translate('Webhook URL: %s - header: Authorization: Bearer <token>'), $url)],
+            'SeenOrigins' => ['values' => $rows],
+        ];
+        $this->patchForm($form['elements'], $patches);
+        $this->patchForm($form['actions'], $patches);
+        return json_encode($form);
     }
 
     /**
@@ -376,6 +478,163 @@ class HealthHub extends IPSModule
         $stats = $writer->writeDays($this->GetIDForIdent($ident), $values);
         $this->SendDebug('Write ' . $ident, json_encode($values) . ' -> ' . json_encode($stats), 0);
         return $stats;
+    }
+
+    /**
+     * Parses a HC Webhook payload, merges it into the buffered state and writes
+     * every affected day of every affected variable to the archive.
+     */
+    private function ingest(string $raw): array
+    {
+        $this->logRaw($raw);
+        $payload = json_decode($raw, true);
+        if (!is_array($payload)) {
+            $this->updateStatusText('Ingest: invalid JSON');
+            return ['ok' => false, 'error' => 'invalid JSON'];
+        }
+        if ($this->archiveId() === 0) {
+            return ['ok' => false, 'error' => 'no archive instance'];
+        }
+
+        $clock = $this->clock();
+        $parser = new HHHcIngest(
+            $clock,
+            HHHcIngest::parseSourceList($this->ReadPropertyString('BodySources')),
+            HHHcIngest::parseSourceList($this->ReadPropertyString('ActivitySources')),
+            $this->ReadPropertyString('MeasureRule'),
+            $this->ReadPropertyInteger('IngestKeepDays')
+        );
+
+        if (!IPS_SemaphoreEnter('HH_Ingest_' . $this->InstanceID, 30000)) {
+            return ['ok' => false, 'error' => 'busy'];
+        }
+        try {
+            $state = json_decode($this->ReadAttributeString('IngestState'), true) ?: ['days' => []];
+            $result = $parser->ingest($payload, $state);
+            $this->WriteAttributeString('IngestState', json_encode($result['state']));
+
+            $written = [];
+            foreach ($result['touched'] as $ident => $days) {
+                $values = [];
+                foreach ($days as $day) {
+                    $v = $parser->computeDay($result['state'], $day, $ident);
+                    if ($v !== null) {
+                        $values[$day] = $v;
+                    }
+                }
+                if (count($values) > 0) {
+                    $this->writeDaily($ident, $values);
+                    $written[$ident] = $values;
+                }
+            }
+        } finally {
+            IPS_SemaphoreLeave('HH_Ingest_' . $this->InstanceID);
+        }
+
+        $this->rememberOrigins($result['stats']['origins']);
+        $stats = $result['stats'];
+        $this->SetValue('LastIngest', time());
+        $this->updateStatusText(sprintf(
+            'Ingest %s: %d new, %d duplicate, %d ignored, %d too old',
+            date('d.m. H:i'),
+            $stats['accepted'],
+            $stats['duplicates'],
+            $stats['ignored'],
+            $stats['too_old']
+        ));
+        $this->SendDebug('Ingest', json_encode(['stats' => $stats, 'written' => $written]), 0);
+
+        return [
+            'ok'           => true,
+            'accepted'     => $stats['accepted'],
+            'duplicates'   => $stats['duplicates'],
+            'ignored'      => $stats['ignored'],
+            'too_old'      => $stats['too_old'],
+            'unused_types' => $stats['unused_types'],
+            'written'      => $written,
+        ];
+    }
+
+    /** Debug mode: raw payload into the debug window and a file. */
+    private function logRaw(string $raw): void
+    {
+        if (!$this->ReadPropertyBoolean('DebugMode')) {
+            return;
+        }
+        $this->SendDebug('Ingest raw', $raw, 0);
+        $dir = rtrim(IPS_GetKernelDir(), '/\\') . DIRECTORY_SEPARATOR . 'HealthHub' . DIRECTORY_SEPARATOR . 'raw';
+        if (!is_dir($dir) && !@mkdir($dir, 0777, true)) {
+            $this->SendDebug('Ingest raw', 'cannot create ' . $dir, 0);
+            return;
+        }
+        $file = $dir . DIRECTORY_SEPARATOR . 'hc_' . date('Ymd_His') . '_' . substr(uniqid(), -5) . '.json';
+        @file_put_contents($file, $raw);
+        $files = glob($dir . DIRECTORY_SEPARATOR . 'hc_*.json') ?: [];
+        sort($files);
+        while (count($files) > self::RAW_KEEP_FILES) {
+            @unlink(array_shift($files));
+        }
+    }
+
+    private function rememberOrigins(array $origins): void
+    {
+        if (count($origins) === 0) {
+            return;
+        }
+        $seen = json_decode($this->ReadAttributeString('SeenOrigins'), true) ?: [];
+        foreach ($origins as $type => $list) {
+            foreach ($list as $origin => $count) {
+                $seen[$type][$origin] = [($seen[$type][$origin][0] ?? 0) + $count, time()];
+            }
+        }
+        $this->WriteAttributeString('SeenOrigins', json_encode($seen));
+    }
+
+    private function updateStatusText(string $text): void
+    {
+        $this->SetValue('Status', $text);
+    }
+
+    private function respond(int $code, array $body): void
+    {
+        $reasons = [200 => 'OK', 400 => 'Bad Request', 401 => 'Unauthorized', 404 => 'Not Found', 405 => 'Method Not Allowed'];
+        header('HTTP/1.1 ' . $code . ' ' . ($reasons[$code] ?? ''));
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode($body, JSON_UNESCAPED_SLASHES);
+    }
+
+    /** Recursively sets properties of form elements found by name. */
+    private function patchForm(array &$elements, array $patches): void
+    {
+        foreach ($elements as &$el) {
+            if (isset($el['name'], $patches[$el['name']])) {
+                $el = array_merge($el, $patches[$el['name']]);
+            }
+            if (isset($el['items']) && is_array($el['items'])) {
+                $this->patchForm($el['items'], $patches);
+            }
+        }
+    }
+
+    private function registerHook(string $hook): void
+    {
+        $ids = IPS_GetInstanceListByModuleID('{015A6EB8-D6E5-4B93-B496-0D3F77AE9FE1}'); // WebHook Control
+        if (count($ids) === 0) {
+            return;
+        }
+        $hookId = $ids[0];
+        $hooks = json_decode(IPS_GetProperty($hookId, 'Hooks'), true) ?: [];
+        foreach ($hooks as $h) {
+            if (($h['Hook'] ?? '') === $hook && (int) ($h['TargetID'] ?? 0) === $this->InstanceID) {
+                return; // already registered
+            }
+        }
+        $hooks = array_values(array_filter($hooks, static function ($h) use ($hook) {
+            return ($h['Hook'] ?? '') !== $hook;
+        }));
+        $hooks[] = ['Hook' => $hook, 'TargetID' => $this->InstanceID];
+        IPS_SetProperty($hookId, 'Hooks', json_encode($hooks));
+        IPS_ApplyChanges($hookId);
     }
 
     private function backend(int $archiveId): HHIpsArchiveBackend
