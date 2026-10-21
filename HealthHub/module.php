@@ -9,6 +9,8 @@ require_once __DIR__ . '/libs/HookAuth.php';
 require_once __DIR__ . '/libs/FddbImport.php';
 require_once __DIR__ . '/libs/McpTools.php';
 require_once __DIR__ . '/libs/McpServer.php';
+require_once __DIR__ . '/libs/DashboardData.php';
+require_once __DIR__ . '/libs/Plausibility.php';
 
 /**
  * HealthHub - IP-Symcon module
@@ -26,6 +28,8 @@ require_once __DIR__ . '/libs/McpServer.php';
  *          day totals from the store, nightly timer, range import via work queue.
  * Phase 4: read-only MCP server for Claude on /hook/healthhub/mcp (Streamable HTTP,
  *          protocol 2026-07-28 plus legacy initialize clients), own bearer token.
+ * Phase 5: dashboard on /hook/healthhub (same look as the other modules) with waist
+ *          entry, goal text, today treated as "in progress" in averages.
  */
 class HealthHub extends IPSModule
 {
@@ -36,8 +40,11 @@ class HealthHub extends IPSModule
 
     private const HOOK_INGEST = '/hook/healthhub/ingest';
     private const HOOK_MCP = '/hook/healthhub/mcp';
+    private const HOOK_DASHBOARD = '/hook/healthhub';
+    /** Waist entries via the dashboard: today and up to this many days back. */
+    private const WAIST_DASHBOARD_DAYS_BACK = 7;
     /** Reported as serverInfo.version */
-    private const MODULE_VERSION = '0.10';
+    private const MODULE_VERSION = '0.11';
     /** Raw payload files kept in <kernel dir>/HealthHub/raw */
     private const RAW_KEEP_FILES = 300;
 
@@ -105,6 +112,7 @@ class HealthHub extends IPSModule
         $this->RegisterPropertyFloat('StartWeight', 74.2);
         $this->RegisterPropertyFloat('StartBodyFat', 21.4);
         $this->RegisterPropertyFloat('StartLeanMass', 58.2);
+        $this->RegisterPropertyString('GoalText', 'Bauchfett reduzieren, Muskelmasse halten oder leicht aufbauen (Rekomposition).');
 
         // --- Health Connect ingest ---
         $this->RegisterPropertyString('IngestToken', '');            // generated on first ApplyChanges
@@ -112,7 +120,12 @@ class HealthHub extends IPSModule
         $this->RegisterPropertyString('ActivitySources', '');
         $this->RegisterPropertyString('MeasureRule', HHHcIngest::RULE_SESSION);
         $this->RegisterAttributeBoolean('RuleMigrated', false);     // v0.6: first -> session once
+        $this->RegisterAttributeBoolean('InvalidCleanupDone', false); // v0.11: remove impossible values once
         $this->RegisterPropertyInteger('IngestKeepDays', 14);
+
+        // --- dashboard ---
+        $this->RegisterPropertyBoolean('DashboardEnabled', true);
+        $this->RegisterPropertyString('DashboardPin', '');          // empty = waist entry without PIN
 
         // --- MCP server ---
         $this->RegisterPropertyBoolean('McpEnabled', true);
@@ -202,8 +215,10 @@ class HealthHub extends IPSModule
         // the archive may not be ready during kernel start-up
         if (IPS_GetKernelRunlevel() == KR_READY) {
             $this->enableArchiving();
+            $this->cleanupInvalidOnce();
             $this->registerHook(self::HOOK_INGEST);
             $this->registerHook(self::HOOK_MCP);
+            $this->registerHook(self::HOOK_DASHBOARD);
         } else {
             $this->RegisterMessage(0, IPS_KERNELSTARTED);
         }
@@ -220,8 +235,10 @@ class HealthHub extends IPSModule
     {
         if ($Message == IPS_KERNELSTARTED && $this->archiveId() > 0) {
             $this->enableArchiving();
+            $this->cleanupInvalidOnce();
             $this->registerHook(self::HOOK_INGEST);
             $this->registerHook(self::HOOK_MCP);
+            $this->registerHook(self::HOOK_DASHBOARD);
         }
     }
 
@@ -242,22 +259,30 @@ class HealthHub extends IPSModule
      */
     public function SetWaist(float $cm, string $date = ''): bool
     {
+        $error = $this->storeWaist($cm, $date);
+        if ($error !== null) {
+            echo $error;
+            return false;
+        }
+        return true;
+    }
+
+    /** Validates and stores a waist value; returns an error text or null. */
+    private function storeWaist(float $cm, string $date): ?string
+    {
         $clock = $this->clock();
         $day = $date === '' ? $clock->today() : $date;
         if (!HHDayClock::isValidDay($day)) {
-            echo $this->Translate('Invalid date, expected YYYY-MM-DD') . ': ' . $day;
-            return false;
+            return $this->Translate('Invalid date, expected YYYY-MM-DD') . ': ' . $day;
         }
         if ($day > $clock->today()) {
-            echo $this->Translate('Date must not be in the future') . ': ' . $day;
-            return false;
+            return $this->Translate('Date must not be in the future') . ': ' . $day;
         }
         if ($cm < self::WAIST_MIN || $cm > self::WAIST_MAX) {
-            echo sprintf($this->Translate('Waist must be between %d and %d cm'), (int) self::WAIST_MIN, (int) self::WAIST_MAX);
-            return false;
+            return sprintf($this->Translate('Waist must be between %d and %d cm'), (int) self::WAIST_MIN, (int) self::WAIST_MAX);
         }
         $stats = $this->writeDaily('Waist', [$day => round($cm, 1)]);
-        return count($stats['skipped']) === 0;
+        return count($stats['skipped']) === 0 ? null : implode(', ', $stats['skipped']);
     }
 
     /**
@@ -296,9 +321,15 @@ class HealthHub extends IPSModule
      */
     public function ProcessHookData()
     {
-        $hook = (string) ($_SERVER['HOOK'] ?? parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH));
+        // route by the real request path: with /hook/healthhub registered as well, IPS may
+        // report the shorter hook in $_SERVER['HOOK'] for /hook/healthhub/mcp
+        $hook = (string) (parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH) ?: ($_SERVER['HOOK'] ?? ''));
         if (rtrim($hook, '/') === self::HOOK_MCP) {
             $this->handleMcp();
+            return;
+        }
+        if (rtrim($hook, '/') === self::HOOK_DASHBOARD) {
+            $this->handleDashboard();
             return;
         }
         if (rtrim($hook, '/') !== self::HOOK_INGEST) {
@@ -433,9 +464,11 @@ class HealthHub extends IPSModule
         }
         $url = 'http://<IPS-IP>:3777' . self::HOOK_INGEST;
         $mcpUrl = 'http://<IPS-IP>:3777' . self::HOOK_MCP;
+        $dashUrl = 'http://<IPS-IP>:3777' . self::HOOK_DASHBOARD;
         $patches = [
             'IngestUrl'   => ['caption' => sprintf($this->Translate('Webhook URL: %s - header: Authorization: Bearer <token>'), $url)],
             'SeenOrigins' => ['values' => $rows],
+            'DashboardUrl' => ['caption' => sprintf($this->Translate('Dashboard: %s (browser / IPSView WebView)'), $dashUrl)],
             'McpUrl'      => ['caption' => sprintf($this->Translate('MCP URL: %s - header: Authorization: Bearer <MCP token>'), $mcpUrl)],
         ];
         $this->patchForm($form['elements'], $patches);
@@ -602,6 +635,41 @@ class HealthHub extends IPSModule
             'data directory: ' . $dir . ' (' . (is_dir($dir) ? (is_writable($dir) ? 'writable' : 'NOT writable') : 'created on first import') . ')',
         ];
         return implode("\n", $lines);
+    }
+
+    /**
+     * Deletes archived daily values that are physically impossible (e.g. the 0 cm waist IPS
+     * logs when archiving is switched on). Ranges: HHPlausibility::RANGES.
+     * HH_RemoveInvalidValues(int $InstanceID)
+     */
+    public function RemoveInvalidValues(): string
+    {
+        $archiveId = $this->archiveId();
+        if ($archiveId === 0) {
+            return $this->Translate('No archive instance found.');
+        }
+        $backend = $this->backend($archiveId);
+        $clock = $this->clock();
+        $removed = [];
+        foreach (array_keys(self::DAILY_VARS) as $ident) {
+            $varId = $this->GetIDForIdent($ident);
+            $n = 0;
+            foreach ($backend->getLoggedValues($varId, 0, time() + 86400) as $row) {
+                if (!HHPlausibility::isValid($ident, $row['Value'])) {
+                    $backend->deleteVariableData($varId, (int) $row['TimeStamp'], (int) $row['TimeStamp']);
+                    $removed[] = $ident . ' ' . $clock->dayOf((int) $row['TimeStamp']) . ' = ' . $row['Value'];
+                    $n++;
+                }
+            }
+            if ($n > 0) {
+                $backend->reAggregateVariable($varId);
+            }
+        }
+        $msg = count($removed) === 0
+            ? $this->Translate('No invalid values found.')
+            : sprintf($this->Translate('%d invalid value(s) removed: %s'), count($removed), implode('; ', $removed));
+        $this->SendDebug('Cleanup', $msg, 0);
+        return $msg;
     }
 
     /**
@@ -948,6 +1016,89 @@ class HealthHub extends IPSModule
         IPS_ApplyChanges($hookId);
     }
 
+    /**
+     * Dashboard: GET = HTML, ?data=1 = JSON, POST {ident:'Waist', value, date, pin} = waist entry.
+     * Same pattern as the other dashboards (Stiebel, POLO-AIR): no tokens, LAN only, optional PIN.
+     */
+    private function handleDashboard(): void
+    {
+        if (!$this->ReadPropertyBoolean('DashboardEnabled')) {
+            $this->respond(404, ['ok' => false, 'error' => 'dashboard disabled']);
+            return;
+        }
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+            $payload = json_decode((string) file_get_contents('php://input'), true);
+            if (!is_array($payload) || ($payload['ident'] ?? '') !== 'Waist') {
+                $this->respond(400, ['ok' => false, 'error' => 'invalid ident']);
+                return;
+            }
+            $pin = $this->ReadPropertyString('DashboardPin');
+            if ($pin !== '' && (string) ($payload['pin'] ?? '') !== $pin) {
+                $this->respond(403, ['ok' => false, 'error' => 'PIN']);
+                return;
+            }
+            $clock = $this->clock();
+            $date = (string) ($payload['date'] ?? '');
+            if ($date !== '' && $date < $clock->addDays($clock->today(), -self::WAIST_DASHBOARD_DAYS_BACK)) {
+                $this->respond(400, ['ok' => false, 'error' => $this->Translate('Date too far back for the dashboard - use HH_SetWaist')]);
+                return;
+            }
+            try {
+                $error = $this->storeWaist((float) ($payload['value'] ?? 0), $date);
+            } catch (Throwable $e) {
+                $error = $e->getMessage();
+            }
+            $this->respond($error === null ? 200 : 400, $error === null ? ['ok' => true] : ['ok' => false, 'error' => $error]);
+            return;
+        }
+        if (isset($_GET['data'])) {
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-store');
+            echo json_encode($this->dashboardData(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION);
+            return;
+        }
+        header('Content-Type: text/html; charset=utf-8');
+        readfile(__DIR__ . '/dashboard.html');
+    }
+
+    private function dashboardData(): array
+    {
+        $data = (new HHDashboardData($this->healthSource(), $this->clock()))->build();
+        $data['status'] = [
+            'last_ingest' => $this->GetValue('LastIngest') ?: null,
+            'last_fddb' => $this->GetValue('LastFddbImport') ?: null,
+            'text' => $this->GetValue('Status'),
+            'fddb_enabled' => $this->ReadPropertyBoolean('FddbEnabled'),
+            'mcp_enabled' => $this->ReadPropertyBoolean('McpEnabled'),
+        ];
+        $data['pinRequired'] = $this->ReadPropertyString('DashboardPin') !== '';
+        $data['waistDaysBack'] = self::WAIST_DASHBOARD_DAYS_BACK;
+        $data['version'] = self::MODULE_VERSION;
+        $data['now'] = time();
+        return $data;
+    }
+
+    /** Read-only data source shared by MCP server and dashboard. */
+    private function healthSource(): HHModuleHealthData
+    {
+        $clock = $this->clock();
+        $varIds = [];
+        foreach (array_keys(self::DAILY_VARS) as $ident) {
+            $varIds[$ident] = $this->GetIDForIdent($ident);
+        }
+        try {
+            $store = $this->foodStore(true);
+        } catch (Throwable $e) {
+            $store = null; // nothing imported yet
+        }
+        return new HHModuleHealthData(
+            new HHArchiveWriter(new HHIpsArchiveBackend($this->archiveId()), $clock),
+            $varIds,
+            $store,
+            $this->mcpProfile()
+        );
+    }
+
     /** MCP endpoint: token check, then the protocol handler. Strictly read-only. */
     private function handleMcp(): void
     {
@@ -993,25 +1144,7 @@ class HealthHub extends IPSModule
 
     private function mcpTools(): HHMcpTools
     {
-        $clock = $this->clock();
-        $archiveId = $this->archiveId();
-        $varIds = [];
-        foreach (array_keys(self::DAILY_VARS) as $ident) {
-            $varIds[$ident] = $this->GetIDForIdent($ident);
-        }
-        $store = null;
-        try {
-            $store = $this->foodStore(true);
-        } catch (Throwable $e) {
-            $store = null; // nothing imported yet
-        }
-        $source = new HHModuleHealthData(
-            new HHArchiveWriter(new HHIpsArchiveBackend($archiveId), $clock),
-            $varIds,
-            $store,
-            $this->mcpProfile()
-        );
-        return new HHMcpTools($source, $clock, $this->ReadPropertyInteger('McpMaxDays'));
+        return new HHMcpTools($this->healthSource(), $this->clock(), $this->ReadPropertyInteger('McpMaxDays'));
     }
 
     /** Goals and context for get_profile. */
@@ -1023,7 +1156,8 @@ class HealthHub extends IPSModule
             'fat_target_g' => $this->ReadPropertyInteger('FatTarget'),
             'calorie_target_method' => 'Flat daily target in FDDB. Sport is included and not tracked separately; watch calories are NOT added (calorie import from the watch into FDDB is disabled).',
             'target_pace_kg_per_week' => [$this->ReadPropertyFloat('PaceMin'), $this->ReadPropertyFloat('PaceMax')],
-            'goal' => 'Lose body fat while keeping lean mass.',
+            'goal' => $this->ReadPropertyString('GoalText'),
+            'goal_note' => 'Goal in the own words of the user (German). Judge progress against it: waist and body fat matter more than scale weight.',
             'start' => [
                 'date' => $this->ReadPropertyString('StartDate'),
                 'weight_kg' => $this->ReadPropertyFloat('StartWeight'),
@@ -1091,6 +1225,20 @@ class HealthHub extends IPSModule
             @mkdir($dir, 0777, true);
         }
         @file_put_contents($dir . DIRECTORY_SEPARATOR . 'fddb_' . $day . '.html', $html);
+    }
+
+    /** Runs RemoveInvalidValues() once after the update to v0.11. */
+    private function cleanupInvalidOnce(): void
+    {
+        if ($this->ReadAttributeBoolean('InvalidCleanupDone')) {
+            return;
+        }
+        $this->WriteAttributeBoolean('InvalidCleanupDone', true);
+        try {
+            $this->updateStatusText('Cleanup: ' . $this->RemoveInvalidValues());
+        } catch (Throwable $e) {
+            $this->SendDebug('Cleanup', 'failed: ' . $e->getMessage(), 0);
+        }
     }
 
     /** Sets the nightly FDDB timer to the next configured time (DST safe). */
@@ -1249,7 +1397,8 @@ class HHModuleHealthData implements HHHealthDataSource
         $out = [];
         foreach ($idents as $ident) {
             if (isset($this->varIds[$ident])) {
-                $out[$ident] = $this->writer->readDays($this->varIds[$ident], $from, $to);
+                // impossible values (e.g. 0 cm waist) count as "no data"
+                $out[$ident] = HHPlausibility::filterDays($ident, $this->writer->readDays($this->varIds[$ident], $from, $to));
             }
         }
         return $out;

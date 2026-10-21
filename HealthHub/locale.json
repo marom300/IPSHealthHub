@@ -103,7 +103,18 @@
             "MCP test": "MCP-Test",
             "Tool": "Tool",
             "Arguments (JSON)": "Argumente (JSON)",
-            "Run": "Ausführen"
+            "Run": "Ausführen",
+            "Dashboard": "Dashboard",
+            "Dashboard active": "Dashboard aktiv",
+            "Dashboard URL": "Dashboard-URL",
+            "Dashboard: %s (browser / IPSView WebView)": "Dashboard: %s (Browser / IPSView-WebView)",
+            "PIN for waist entry (digits, empty = no PIN)": "PIN für Bauchumfang-Eingabe (nur Ziffern, leer = ohne PIN)",
+            "Goal in your own words (for Claude and the dashboard)": "Ziel in eigenen Worten (für Claude und das Dashboard)",
+            "Date too far back for the dashboard - use HH_SetWaist": "Datum zu weit zurück für das Dashboard – HH_SetWaist verwenden",
+            "Remove invalid archive values": "Ungültige Archivwerte entfernen",
+            "Archived daily values outside the plausible range (e.g. 0 cm waist) are deleted. Continue?": "Archivierte Tageswerte außerhalb des plausiblen Bereichs (z. B. 0 cm Bauchumfang) werden gelöscht. Fortfahren?",
+            "No invalid values found.": "Keine ungültigen Werte gefunden.",
+            "%d invalid value(s) removed: %s": "%d ungültige(r) Wert(e) entfernt: %s"
         }
     }
 }

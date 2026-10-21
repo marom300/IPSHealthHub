@@ -36,6 +36,8 @@ class HHMcpTools
     private const FOOD_ENTRIES_MAX_DAYS = 31;
     private const TDEE_MIN_NUTRITION_DAYS = 5;
 
+    private const TODAY_NOTE = 'Today is still in progress: its intake and steps are incomplete and are excluded from averages and TDEE (row flag day_complete=false).';
+
     private const FOOD_NOTE = 'Source: FDDB diary pages. Entries made via FDDB AI food scan or FDDB recipes may be missing in FDDB exports; compare with the FDDB app if totals look low.';
 
     /** variable ident => output key */
@@ -153,7 +155,7 @@ class HHMcpTools
             [
                 'name' => 'get_profile',
                 'title' => 'Goals and context',
-                'description' => 'Goals and context for evaluating the data: calorie target (flat, sport included, watch calories not counted), protein and fat target, target pace (kg/week), start values, data sources and known limitations. Call this first when judging progress.',
+                'description' => 'Goals and context for evaluating the data: the personal goal in own words, calorie target (flat, sport included, watch calories not counted), protein and fat target, target pace (kg/week), start values, data sources and known limitations. Call this first when judging progress.',
                 'inputSchema' => ['type' => 'object', 'additionalProperties' => false],
                 'annotations' => $ro,
             ],
@@ -168,7 +170,7 @@ class HHMcpTools
         $vals = $this->data->daily(array_keys(self::OVERVIEW), $from, $to);
         $rows = [];
         foreach ($days as $d) {
-            $row = ['date' => $d, 'weekday' => $this->weekday($d)];
+            $row = ['date' => $d, 'weekday' => $this->weekday($d), 'day_complete' => $d < $this->clock->today()];
             foreach (self::OVERVIEW as $ident => $key) {
                 $row[$key] = self::num($vals[$ident][$d] ?? null);
             }
@@ -177,7 +179,7 @@ class HHMcpTools
         return [
             'from' => $from, 'to' => $to,
             'units' => 'kcal, g, kg, %, cm, min, bpm',
-            'notes' => 'null = no data. kcal_in null means no FDDB entries that day (not 0 kcal). active_kcal_watch_estimate is a watch estimate, likely 30-50 % too high, not counted against the calorie target.',
+            'notes' => 'null = no data. kcal_in null means no FDDB entries that day (not 0 kcal). active_kcal_watch_estimate is a watch estimate, likely 30-50 % too high, not counted against the calorie target. Today is still in progress: its intake and steps are incomplete and are excluded from averages and TDEE (row flag day_complete=false).',
             'days' => $rows,
         ];
     }
@@ -195,14 +197,14 @@ class HHMcpTools
         foreach ($days as $d) {
             $r = $byDay[$d] ?? null;
             $row = [
-                'date' => $d, 'weekday' => $this->weekday($d), 'tracked' => $r !== null,
+                'date' => $d, 'weekday' => $this->weekday($d), 'tracked' => $r !== null, 'day_complete' => $d < $this->clock->today(),
                 'kcal' => self::num($r['kcal'] ?? null), 'protein_g' => self::num($r['protein'] ?? null),
                 'fat_g' => self::num($r['fat'] ?? null), 'carbs_g' => self::num($r['carbs'] ?? null),
                 'sugar_g' => self::num($r['sugar'] ?? null), 'fiber_g' => self::num($r['fiber'] ?? null),
                 'alcohol_g' => self::num($r['alcohol'] ?? null), 'salt_g' => self::num($r['salt'] ?? null),
                 'entries' => $r !== null ? (int) $r['entries'] : 0,
             ];
-            if ($r !== null) {
+            if ($r !== null && $row['day_complete']) {
                 $n++;
                 foreach ($sum as $k => $_) {
                     $sum[$k] += (float) ($row[$k] ?? 0);
@@ -220,10 +222,10 @@ class HHMcpTools
         }
         return [
             'from' => $from, 'to' => $to,
-            'tracked_days' => $n, 'days_in_range' => count($days),
+            'tracked_days' => $n, 'days_in_range' => count($days), 'averages_cover' => 'complete tracked days only (today excluded)',
             'average_per_tracked_day' => $avg,
             'targets' => ['kcal' => $p['kcal_target'] ?? null, 'protein_g' => $p['protein_target_g'] ?? null, 'fat_g' => $p['fat_target_g'] ?? null],
-            'notes' => self::FOOD_NOTE,
+            'notes' => self::FOOD_NOTE . ' ' . self::TODAY_NOTE,
             'days' => $rows,
         ];
     }
@@ -315,7 +317,10 @@ class HHMcpTools
     private function tool_get_meal_pattern(array $a): array
     {
         [$from, $to] = $this->range($a);
-        $entries = $this->data->foodEntries($from, $to, '', '', 100000);
+        $today = $this->clock->today();
+        $entries = array_values(array_filter($this->data->foodEntries($from, $to, '', '', 100000), static function ($e) use ($today) {
+            return $e['day'] < $today; // today is still in progress
+        }));
         $trackedDays = [];
         $meals = [];
         $windows = [];
@@ -443,6 +448,9 @@ class HHMcpTools
             foreach ($idents as $ident) {
                 $series[$ident] = [];
                 foreach ($w['days'] as $d) {
+                    if ($d === $this->clock->today() && in_array($ident, ['KcalIn', 'Protein', 'Fat', 'Carbs', 'Steps'], true)) {
+                        continue; // today's intake and steps are still incomplete
+                    }
                     if (($vals[$ident][$d] ?? null) !== null) {
                         $series[$ident][] = (float) $vals[$ident][$d];
                     }
@@ -495,6 +503,7 @@ class HHMcpTools
         return [
             'from' => $from, 'to' => $to,
             'method' => 'TDEE = average kcal_in of tracked days - (change of weekly average weight x ' . self::KCAL_PER_KG . ' kcal/kg) / days. Only weeks with >= ' . self::TDEE_MIN_NUTRITION_DAYS . ' tracked nutrition days and weight in the week and the week before. Weekly averages always cover the whole ISO week (Mon-Sun, up to "to"). Watch calories are not used.',
+            'today' => self::TODAY_NOTE,
             'uncertainty' => 'Weekly average weight varies by roughly +/-0.3-0.5 kg (water, glycogen, salt, bowel content). Over one week that alone is +/-300-550 kcal/day, so single weeks are rough; the overall estimate over several weeks is much more reliable. Missing FDDB entries (forgotten items, AI food scan, recipes) bias the TDEE estimate low.',
             'overall' => $this->overallTdee($qualifying),
             'weeks' => $rows,

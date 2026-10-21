@@ -9,7 +9,7 @@ Privates IP-Symcon-Modul, das Gesundheits- und Ernährungsdaten als **Tageswerte
 | Pixel Watch | Health Connect → HC Webhook *(Phase 2)* | Schritte, Aktivkalorien, Schlaf, Ruhepuls |
 | manuell | Variable / Formular / `HH_SetWaist` | Bauchumfang |
 
-> **Stand: Phase 4 (MCP-Server)** – Grundgerüst, Health-Connect-Empfang (HC Webhook), FDDB-Import mit Einzeleinträgen und der MCP-Server, über den Claude Code und Claude Desktop die Daten lesen.
+> **Stand: Phase 5 (Feinschliff)** – Health-Connect-Empfang (HC Webhook), FDDB-Import mit Einzeleinträgen, MCP-Server für Claude Code und Claude Desktop und ein **Dashboard** im Stil der anderen Module, über das sich auch der Bauchumfang eintragen lässt.
 
 ## Installation
 
@@ -104,6 +104,35 @@ Die Variablen *Kalorien gegessen*, *Protein*, *Fett*, *Kohlenhydrate*, *Zucker* 
 
 **Datenschutz:** Das FDDB-Passwort liegt als Instanz-Eigenschaft in der IPS-Konfiguration (`settings.json`), wie bei allen IPS-Modulen. Mit dem Debug-Modus landet jede Tagebuchseite als `HealthHub/raw/fddb_<Tag>.html` auf der Platte.
 
+## Dashboard
+
+`http://<IPS-IP>:3777/hook/healthhub`: im Browser, als IPSView-WebView oder auf dem Wandtablet. Gleicher Look wie die Dashboards von Wärmepumpe und Lüftung.
+
+| Kachel | Inhalt |
+|---|---|
+| Heute | kcal und Protein gegen das Ziel (Balken), Fett, Kohlenhydrate, Anzahl FDDB-Einträge. Der Tag „läuft“ noch. |
+| Ø 7 Tage | Durchschnitt der letzten 7 **abgeschlossenen** Tage mit FDDB-Einträgen |
+| Körper | letztes Gewicht, Körperfett und magere Masse mit Veränderung gegenüber dem letzten Wert vor ≥ 28 Tagen. Dazu Wägungen der letzten 7 Tage, ab weniger als 2 gelb markiert. |
+| Bauchumfang | letzter Wert und Veränderung. Button **Bauchumfang eintragen** öffnet einen eigenen Ziffernblock (Heute/Gestern/Vorgestern). Nach 7 Tagen ohne Messung erscheint eine Erinnerung. |
+| Verlauf 60 Tage | Umschalter Gewicht / Bauch (Messpunkte plus gestrichelte Trendgerade mit kg bzw. cm pro Woche), Kalorien / Protein (Tagesbalken mit Ziellinie, über Ziel rot, heute blass) |
+| Energiebilanz | geschätzter Gesamtumsatz (TDEE) der letzten 8 Wochen mit Unsicherheit, Ø Aufnahme, Ø Defizit, Tempo gegen das Zieltempo |
+| Aktivität & Schlaf | Schritte heute und Ø, Schlaf letzte Nacht und Ø, Ruhepuls |
+
+**Kopfzeile:** Badges für Health Connect, FDDB und Claude (MCP).
+- Health Connect wird gelb, wenn der letzte Empfang älter als 6 h ist.
+- FDDB wird gelb, wenn der letzte Import älter als 30 h ist.
+- Der Datenstand wird rot, wenn Health Connect seit mehr als 12 h nichts geliefert hat.
+
+**Layout:** Ab 1000 px Breite passt alles ohne Scrollen auf eine Seite. Die kompakte Stufe für 1920×1080 bei 150 % (≈ 1280×620) ist geprüft. Schmalere Geräte bekommen zwei Spalten, Handys eine, und die Seite scrollt normal.
+
+**Eingabe ohne Bildschirmtastatur:** Der Bauchumfang wird über einen eigenen Ziffernblock eingegeben, weil Tablet-WebViews die Systemtastatur oft nicht zuverlässig öffnen. Rückmeldungen kommen als Einblendung statt `alert()`.
+
+**Speichern:** Mit gesetzter *PIN für Bauchumfang-Eingabe* fragt das Dashboard sie über einen Ziffernblock ab und merkt sie sich bis zum Schließen des Browsers. Im Dashboard sind Einträge bis 7 Tage zurück möglich, ältere per `HH_SetWaist`.
+
+**Technik:** GET liefert die HTML-Seite, `?data=1` liefert alle Werte als JSON (aus derselben read-only-Datenquelle wie der MCP-Server), POST `{"ident":"Waist","value":88.5,"date":"2026-10-18","pin":""}` speichert. Das Dashboard lädt jede Minute neu.
+
+**IPSView:** Ein WebView-Element mit der URL oben anlegen. Für Diagramme der archivierten Tagesvariablen in IPSView: Die Tageswerte stehen mit Zeitstempel 12:00 im Archiv. Für exakte Tageswerte die Darstellung als Linie oder Punkte auf Rohwerten wählen, nicht Tagesbalken der Standard-Aggregation (siehe *Wie Tageswerte gespeichert werden*).
+
 ## Claude anbinden (MCP-Server)
 
 Das Modul enthält einen MCP-Server unter `http://<IPS-IP>:3777/hook/healthhub/mcp`. Claude kann damit Fragen beantworten wie „Wie ist mein echter Gesamtumsatz seit Oktober?“, „Passt mein Proteinschnitt?“ oder „Verliere ich magere Masse?“.
@@ -157,11 +186,13 @@ Hinweise zur Konfiguration:
 
 ### Tools
 
+**Heute läuft noch:** Aufnahme und Schritte des heutigen Tages sind unvollständig. Die Tools zeigen den Tag mit `day_complete: false`, rechnen ihn aber nicht in Durchschnitte, Mahlzeitenmuster und TDEE ein. Der Schlaf der letzten Nacht und der Ruhepuls gehören zum heutigen Tag und sind vollständig.
+
 Alle Datumsangaben `JJJJ-MM-TT` (Ortszeit), Zeitraum max. *Max. Zeitraum pro Abfrage* (Standard 366 Tage). Antworten sind kompaktes JSON mit **einer Zeile pro Tag**, fehlende Werte `null`.
 
 | Tool | Parameter | Inhalt |
 |---|---|---|
-| `get_profile` | – | Ziele (1800 kcal, 130 g Protein, 60 g Fett), Methode, Zieltempo, Startwerte, Datenquellen, Einschränkungen |
+| `get_profile` | – | Ziel in eigenen Worten (z. B. „Bauchfett reduzieren, Muskelmasse halten oder leicht aufbauen“), Kalorien-, Protein-, Fettziel, Methode, Zieltempo, Startwerte, Datenquellen, Einschränkungen |
 | `get_daily_overview` | `from`, `to` | Pro Tag alle Werte aus allen Quellen. Wichtigstes Tool. |
 | `get_nutrition` | `from`, `to` | FDDB-Tagessummen inkl. Zucker, Ballaststoffe, Alkohol, Salz, Anzahl Einträge; Durchschnitt über getrackte Tage und Ziele |
 | `get_food_entries` | `from`, `to` (max. 31 Tage), opt. `search`, `meal` | Einzeleinträge mit Uhrzeit, Mahlzeit, Produkt, Menge, Makros |
@@ -235,6 +266,18 @@ Der heutige Eintrag trägt dadurch die Schreibzeit statt 12:00. Der Timer **Kons
 
 `null` als Tageswert **löscht** den Tag: ein FDDB-Tag ohne Einträge ist kein 0-kcal-Tag. Zukünftige Tage werden abgewiesen.
 
+**Plausibilitätsgrenzen:** Werte außerhalb dieser Bereiche gelten beim Lesen (MCP-Server, Dashboard) als „keine Daten“ und werden von *Ungültige Archivwerte entfernen* gelöscht:
+
+| Variable | gültig | Variable | gültig |
+|---|---|---|---|
+| Kalorien | > 0 – 10.000 kcal | Gewicht | 20–300 kg |
+| Protein, Fett, Zucker | 0–1.000 g | Körperfett | 1–75 % |
+| Kohlenhydrate | 0–2.000 g | Magere Masse | 10–200 kg |
+| Ballaststoffe | 0–300 g | Körperwasser | 5–150 kg |
+| Schritte | > 0 – 200.000 | Knochenmasse | 0,3–10 kg |
+| Aktivkalorien | > 0 – 10.000 kcal | Bauchumfang | 30–250 cm |
+| Schlafdauer | > 0 – 1.440 min | Ruhepuls | 25–150 bpm |
+
 **Hinweis zu IPSView-Diagrammen:** Mittelt die Archiv-Aggregation *Standard* zeitgewichtet (noch am echten System zu prüfen), enthält ein Tagesbalken bis 12:00 noch den Vortageswert. Für exakte Tageswerte im Diagramm die Darstellung *Linie/Punkte auf Rohwerten* nutzen. Der MCP-Server liest immer die Rohwerte.
 
 ## Konfiguration
@@ -246,6 +289,13 @@ Der heutige Eintrag trägt dadurch die Schreibzeit statt 12:00. Der Timer **Kons
 | Archiv-Instanz (`ArchiveID`) | leer | Archive-Control-Instanz | In welches Archiv geloggt wird. Leer = erstes Archive Control im System (Normalfall). Nur ändern, wenn du mehrere Archive betreibst. |
 | Zeitzone (`TimeZone`) | `Europe/Vienna` | PHP-Zeitzonenname | Bestimmt Tagesgrenzen (00:00–23:59) und den 12:00-Zeitstempel. Ungültiger Name → Instanzstatus *Ungültige Zeitzone*, Timer aus. Nach Befüllung des Archivs **nicht mehr ändern**, sonst verschieben sich die Tagesgrenzen. |
 | Debug-Modus (`DebugMode`) | aus | ein/aus | Jede empfangene Roh-Payload ins Debug-Fenster und als Datei `hc_<Datum>_<Zeit>_….json` unter `<IPS-Datenverzeichnis>/HealthHub/raw/` (die letzten 300 Dateien bleiben). Zum Einrichten und zur Fehlersuche einschalten, im Dauerbetrieb aus. |
+
+### Dashboard
+
+| Parameter | Standard | Bereich | Wirkung |
+|---|---|---|---|
+| Dashboard aktiv (`DashboardEnabled`) | ein | ein/aus | Aus = `/hook/healthhub` antwortet mit 404. |
+| PIN für Bauchumfang-Eingabe (`DashboardPin`) | leer | nur Ziffern | Leer = Eintragen ohne PIN. Gesetzt = das Dashboard fragt die PIN beim Speichern über einen Ziffernblock ab, der Server prüft sie bei jedem Speichern. Sinnvoll, wenn das Dashboard auf einem frei zugänglichen Wandtablet läuft. |
 
 ### Health-Connect-Empfang
 
@@ -281,6 +331,7 @@ Die Ziele liefert das MCP-Tool `get_profile` an Claude, damit die Bewertung ohne
 
 | Parameter | Standard | Bereich | Wirkung |
 |---|---|---|---|
+| Ziel in eigenen Worten (`GoalText`) | „Bauchfett reduzieren, Muskelmasse halten oder leicht aufbauen (Rekomposition).“ | Text | Bekommt Claude über `get_profile` und bewertet die Daten danach, z. B. Bauchumfang und Körperfett wichtiger als die Waage. Steht auch in der Fußzeile des Dashboards. |
 | Kalorienziel (`KcalTarget`) | 1800 kcal | 800–5000 | Pauschales Tagesziel aus FDDB. Sport ist eingerechnet, Uhr-Kalorien zählen nicht. |
 | Proteinziel (`ProteinTarget`) | 130 g | 0–400 | Tagesziel Protein. |
 | Fettziel (`FatTarget`) | 60 g | 0–300 | Tagesziel Fett. |
@@ -321,12 +372,13 @@ Erlaubt sind 30–250 cm, keine Zukunftsdaten. Ein erneuter Eintrag für denselb
 | `HH_CheckSystem(int $InstanceID): string` | Zeigt PHP-Version, ob `pdo_sqlite`, `dom` und `curl` vorhanden sind, und das Datenverzeichnis. |
 | `HH_McpTest(int $InstanceID, string $Tool, string $ArgumentsJson): string` | Führt ein MCP-Tool lokal aus (ohne Token) und liefert die JSON-Antwort, z. B. `echo HH_McpTest(12345, 'get_weekly_summary', '{"from":"2026-09-15","to":"2026-10-19"}');` |
 | `HH_RegenerateMcpToken(int $InstanceID)` | Neues MCP-Token erzeugen. |
+| `HH_RemoveInvalidValues(int $InstanceID): string` | Löscht archivierte Tageswerte außerhalb des plausiblen Bereichs (siehe *Plausibilitätsgrenzen*), z. B. einen 0-cm-Bauchumfang vom Einschalten des Loggings. Läuft nach dem Update auf v0.11 einmal automatisch (Ergebnis im *Status*), sonst per Button *Wartung → Ungültige Archivwerte entfernen*. |
 | `HH_ProcessPending(int $InstanceID)` | Interner Timer: entfernt die 0-Einträge beim Logging-Start und wiederholt fehlgeschlagene Re-Aggregationen. Läuft nur, solange etwas ansteht. |
 | `HH_SelfTestArchive(int $InstanceID): string` | Prüft die Schreibstrategie auf diesem System mit einer temporären, versteckten Variable und liefert einen Bericht. Zeigt auch das Roh-Verhalten von `SetValue` + `AC_AddLoggedValues`. Startet das Archiv zweimal neu (Logging an/aus), daher nicht im laufenden Betrieb dauernd ausführen. |
 
 ## Entwicklung / Tests
 
-Die reine Logik (`libs/DayClock.php`, `libs/ArchiveWriter.php`, `libs/HcIngest.php`, `libs/HookAuth.php`, `libs/FddbParser.php`, `libs/FddbClient.php`, `libs/FoodStore.php`, `libs/FddbImport.php`, `libs/McpServer.php`, `libs/McpTools.php`) ist frei von IPS-Funktionen und mit PHPUnit getestet. Die IPS-Anbindung steckt in `HHIpsArchiveBackend`.
+Die reine Logik (`libs/DayClock.php`, `libs/ArchiveWriter.php`, `libs/HcIngest.php`, `libs/HookAuth.php`, `libs/FddbParser.php`, `libs/FddbClient.php`, `libs/FoodStore.php`, `libs/FddbImport.php`, `libs/McpServer.php`, `libs/McpTools.php`, `libs/DashboardData.php`, `libs/Plausibility.php`) ist frei von IPS-Funktionen und mit PHPUnit getestet. Die IPS-Anbindung steckt in `HHIpsArchiveBackend`.
 
 ```bash
 php phpunit.phar

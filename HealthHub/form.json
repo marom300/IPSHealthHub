@@ -28,6 +28,27 @@
         },
         {
             "type": "ExpansionPanel",
+            "caption": "Dashboard",
+            "items": [
+                {
+                    "type": "CheckBox",
+                    "name": "DashboardEnabled",
+                    "caption": "Dashboard active"
+                },
+                {
+                    "type": "Label",
+                    "name": "DashboardUrl",
+                    "caption": "Dashboard URL"
+                },
+                {
+                    "type": "PasswordTextBox",
+                    "name": "DashboardPin",
+                    "caption": "PIN for waist entry (digits, empty = no PIN)"
+                }
+            ]
+        },
+        {
+            "type": "ExpansionPanel",
             "caption": "Health Connect ingest",
             "items": [
                 {
@@ -202,6 +223,12 @@
             "type": "ExpansionPanel",
             "caption": "Goals",
             "items": [
+                {
+                    "type": "ValidationTextBox",
+                    "name": "GoalText",
+                    "caption": "Goal in your own words (for Claude and the dashboard)",
+                    "width": "700px"
+                },
                 {
                     "type": "RowLayout",
                     "items": [
@@ -525,6 +552,12 @@
                     "type": "Button",
                     "caption": "System check",
                     "onClick": "echo HH_CheckSystem($id);"
+                },
+                {
+                    "type": "Button",
+                    "caption": "Remove invalid archive values",
+                    "onClick": "echo HH_RemoveInvalidValues($id);",
+                    "confirm": "Archived daily values outside the plausible range (e.g. 0 cm waist) are deleted. Continue?"
                 }
             ]
         }

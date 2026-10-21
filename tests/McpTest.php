@@ -351,6 +351,80 @@ final class McpTest extends TestCase
         $this->assertStringContainsString('tracked nutrition day', $w['tdee_note']);
     }
 
+    public function testTodayIsExcludedFromAverages(): void
+    {
+        // now = 2026-10-19 12:00 (Monday): today's 528 kcal must not drag the averages down
+        $this->data->days = [
+            ['day' => '2026-10-18', 'entries' => 6, 'kcal' => 1900, 'protein' => 120, 'fat' => 60, 'carbs' => 200, 'sugar' => 30, 'fiber' => 20, 'alcohol' => 0, 'salt' => 5],
+            ['day' => '2026-10-19', 'entries' => 2, 'kcal' => 528, 'protein' => 20, 'fat' => 13, 'carbs' => 83, 'sugar' => 10, 'fiber' => 3, 'alcohol' => 0, 'salt' => 1],
+        ];
+        $n = $this->callTool('get_nutrition', ['from' => '2026-10-18', 'to' => '2026-10-19'])['structuredContent'];
+        $this->assertSame(1, $n['tracked_days']);
+        $this->assertSame(1900.0, $n['average_per_tracked_day']['kcal']);
+        $this->assertFalse($n['days'][1]['day_complete']);
+        $this->assertSame(528, $n['days'][1]['kcal'], 'today is still shown');
+
+        $this->data->daily = ['KcalIn' => ['2026-10-19' => 528.0], 'Steps' => ['2026-10-19' => 2270], 'SleepMinutes' => ['2026-10-19' => 406]];
+        $w = $this->callTool('get_weekly_summary', ['from' => '2026-10-19', 'to' => '2026-10-19'])['structuredContent']['weeks'][0];
+        $this->assertSame(0, $w['nutrition_days']);
+        $this->assertNull($w['avg_kcal_in']);
+        $this->assertNull($w['avg_steps'], 'steps of today are incomplete');
+        $this->assertSame(406, $w['avg_sleep_min'], 'last night is complete');
+
+        $this->data->entries = [self::entry('2026-10-18', '08:00', 'Breakfast', 'A', 500, 30), self::entry('2026-10-19', '08:00', 'Breakfast', 'A', 100, 5)];
+        $m = $this->callTool('get_meal_pattern', ['from' => '2026-10-18', 'to' => '2026-10-19'])['structuredContent'];
+        $this->assertSame(1, $m['tracked_days']);
+        $this->assertSame(500, $m['by_meal'][0]['avg_kcal_per_tracked_day']);
+
+        $o = $this->callTool('get_daily_overview', ['from' => '2026-10-18', 'to' => '2026-10-19'])['structuredContent']['days'];
+        $this->assertTrue($o[0]['day_complete']);
+        $this->assertFalse($o[1]['day_complete']);
+    }
+
+    public function testDashboardData(): void
+    {
+        $now = (new DateTimeImmutable('2026-10-19 12:00', new DateTimeZone('Europe/Vienna')))->getTimestamp();
+        $clock = new HHDayClock('Europe/Vienna', function () use ($now) {
+            return $now;
+        });
+        $kcal = [];
+        for ($i = 1; $i <= 7; $i++) {
+            $kcal[$clock->addDays('2026-10-19', -$i)] = 1800.0 + $i * 10;
+        }
+        $kcal['2026-10-19'] = 528.0;
+        $this->data->daily = [
+            'KcalIn' => $kcal,
+            'Protein' => ['2026-10-18' => 100.0, '2026-10-19' => 20.0],
+            'Weight' => ['2026-09-21' => 72.6, '2026-10-11' => 70.9, '2026-10-17' => 70.5],
+            'Waist' => ['2026-09-28' => 91.5, '2026-10-18' => 88.5],
+            'Steps' => ['2026-10-19' => 2270, '2026-10-18' => 14923],
+            'SleepMinutes' => ['2026-10-19' => 406],
+        ];
+        $this->data->entries = [self::entry('2026-10-19', '07:00', 'Breakfast', 'A', 528, 20)];
+        $d = (new HHDashboardData($this->data, $clock))->build();
+
+        $this->assertSame('2026-10-19', $d['today']);
+        $this->assertSame(528.0, $d['day']['kcal']);
+        $this->assertSame(1, $d['day']['entries']);
+        $this->assertSame(406.0, $d['day']['sleep_min']);
+        $this->assertSame(7, $d['avg7']['days'], 'today excluded');
+        $this->assertSame(1840.0, $d['avg7']['kcal']);
+        $this->assertSame(1800, $d['targets']['kcal']);
+
+        $this->assertSame(70.5, $d['body']['weight']['value']);
+        $this->assertSame('2026-10-17', $d['body']['weight']['date']);
+        $this->assertSame(-2.1, $d['body']['weight']['change'], 'vs last value at least 28 days ago');
+        $this->assertSame('2026-09-21', $d['body']['weight']['since']);
+        $this->assertSame(1, $d['body']['weigh_ins_7d']);
+        $this->assertSame(88.5, $d['body']['waist']['value']);
+        $this->assertSame(-3.0, $d['body']['waist']['change'], 'no value 28 days back -> first value in window');
+
+        $this->assertCount(HHDashboardData::SERIES_DAYS, $d['series']['days']);
+        $this->assertSame('2026-10-19', end($d['series']['days']));
+        $this->assertCount(HHDashboardData::SERIES_DAYS, $d['series']['weight']);
+        $this->assertArrayHasKey('tdee_estimate_kcal', $d['tdee']);
+    }
+
     public function testCompactJsonOneLinePerRow(): void
     {
         $text = HHMcpServer::compactJson(['a' => 1, 'rows' => [['x' => 1], ['x' => 2]], 'empty' => []]);

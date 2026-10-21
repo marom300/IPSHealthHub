@@ -9,4 +9,6 @@ require_once __DIR__ . '/../HealthHub/libs/HookAuth.php';
 require_once __DIR__ . '/../HealthHub/libs/FddbImport.php';
 require_once __DIR__ . '/../HealthHub/libs/McpTools.php';
 require_once __DIR__ . '/../HealthHub/libs/McpServer.php';
+require_once __DIR__ . '/../HealthHub/libs/DashboardData.php';
+require_once __DIR__ . '/../HealthHub/libs/Plausibility.php';
 require_once __DIR__ . '/FakeArchiveBackend.php';

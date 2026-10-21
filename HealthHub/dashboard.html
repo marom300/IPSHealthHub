@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HealthHub</title>
+<style>
+:root{
+  --bg:#0e1217;
+  --card:#161c24;
+  --card2:#1c242e;
+  --line:#2a3441;
+  --txt:#e8edf3;
+  --dim:#8b97a5;
+  --kcal:#f4a94d;
+  --prot:#4dc3f4;
+  --body:#7ccf6e;
+  --waist:#c792ea;
+  --heat:#f4764d;
+  --ok:#3ddc84;
+  --warn:#ffd166;
+  --err:#ff5a5a;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--txt);
+  font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  min-height:100dvh;display:flex;flex-direction:column;
+}
+.app{flex:1;display:flex;flex-direction:column;gap:10px;padding:12px;max-width:1500px;margin:0 auto;width:100%;min-height:0}
+
+header{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:none}
+.title{font-size:clamp(14px,1.8vw,18px);font-weight:700;letter-spacing:.3px;white-space:nowrap}
+.title small{color:var(--dim);font-weight:400;margin-left:6px}
+.badges{display:flex;gap:4px;flex-wrap:wrap;flex:1}
+.badge{display:flex;align-items:center;gap:4px;padding:2px 7px;border-radius:999px;white-space:nowrap;
+  background:var(--card);border:1px solid var(--line);font-size:11px;color:var(--dim)}
+.badge .dot{width:6px;height:6px;border-radius:50%;background:var(--line);flex:none}
+.badge.on{color:var(--txt);border-color:rgba(61,220,132,.4)}
+.badge.on .dot{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.badge.on.b-warn{border-color:rgba(255,209,102,.5)} .badge.on.b-warn .dot{background:var(--warn);box-shadow:0 0 6px var(--warn)}
+.badge.on.b-err{border-color:rgba(255,90,90,.6);color:#ffb3b3} .badge.on.b-err .dot{background:var(--err);box-shadow:0 0 6px var(--err)}
+.stamp{color:var(--dim);font-size:11px;white-space:nowrap}
+.stamp.stale{color:var(--err);font-weight:700;font-size:12px}
+
+/* ---------- Kacheln ---------- */
+.grid{flex:1;min-height:0;display:grid;gap:10px;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  grid-template-rows:auto minmax(0,1fr);
+  grid-template-areas:"food avg body waist" "chart chart tdee act"}
+.t-food{grid-area:food}.t-avg{grid-area:avg}.t-body{grid-area:body}.t-waist{grid-area:waist}
+.t-chart{grid-area:chart}.t-tdee{grid-area:tdee}.t-act{grid-area:act}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;
+  display:flex;flex-direction:column;gap:8px;container-type:inline-size;min-width:0;min-height:0}
+.tile h3{font-size:12px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.8px;
+  display:flex;align-items:center;gap:6px}
+.tile h3 .ico{font-size:14px}
+.tile h3 .tag{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400;font-size:11px}
+.kv{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;gap:8px}
+.kv .k{color:var(--dim)}
+.kv .v{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hero{font-size:clamp(22px,9cqi,30px);font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+.hero small{font-size:.5em;color:var(--dim);font-weight:400}
+.sub{color:var(--dim);font-size:12px}
+.sep{border-top:1px solid var(--line);margin:2px 0}
+.bar{height:9px;border-radius:5px;background:var(--card2);border:1px solid var(--line);overflow:hidden;position:relative}
+.bar i{display:block;height:100%;width:0%;background:var(--ok);transition:width .6s,background .6s}
+.bar.kcal i{background:var(--kcal)} .bar.prot i{background:var(--prot)}
+.bar i.over{background:var(--err)}
+.barlbl{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:-4px}
+.barlbl b{color:var(--txt);font-weight:600;font-variant-numeric:tabular-nums}
+.up{color:var(--warn)} .down{color:var(--ok)} .flat{color:var(--dim)}
+.good{color:var(--ok)} .bad{color:var(--err)} .meh{color:var(--warn)}
+.btn{background:rgba(199,146,234,.12);border:1px solid rgba(199,146,234,.5);color:var(--txt);border-radius:10px;
+  padding:9px 10px;font-size:14px;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent;margin-top:auto}
+.btn:active{background:rgba(199,146,234,.25)}
+.hint{font-size:11px;color:var(--warn)}
+
+/* Seiten-/Diagramm-Umschalter */
+.nav{display:flex;background:var(--card2);border:1px solid var(--line);border-radius:10px;overflow:hidden;flex:none}
+.nav button{background:none;border:none;color:var(--dim);padding:5px 12px;font-size:12px;cursor:pointer;white-space:nowrap}
+.nav button.active{background:var(--line);color:var(--txt);font-weight:600}
+.charthead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.charthead h3{flex:1}
+.chartwrap{flex:1 1 0;min-height:120px;position:relative}
+.chartwrap svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+.chartwrap text{font-family:inherit;fill:var(--dim);font-size:10px}
+.legend{display:flex;gap:12px;font-size:11px;color:var(--dim);flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:3px;border-radius:2px;vertical-align:middle;margin-right:4px}
+
+@media (max-height:1000px){
+  .tile{padding:10px 12px;gap:6px}
+  .hero{font-size:clamp(20px,7cqi,26px)}
+}
+/* Touch-Client 1920x1080 @150 %: alles auf einen Blick, kein Scrollen */
+@media (min-width:1000px){
+  body{height:100dvh;overflow:hidden}
+}
+@media (min-width:1000px) and (max-height:840px){
+  .app{padding:8px;gap:8px}
+  .grid{gap:8px}
+  .tile{padding:8px 11px;gap:5px}
+  .kv{font-size:12px}
+  .hero{font-size:clamp(18px,6.5cqi,24px)}
+  .btn{padding:7px 8px}
+}
+@media (max-width:999px){
+  /* schmale Geräte: normale Seite, die scrollt - Kacheln in natürlicher Höhe */
+  .app{flex:none}
+  .grid{flex:none;min-height:auto}
+  .tile{min-height:auto}
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:none;
+    grid-template-areas:"food avg" "body waist" "chart chart" "tdee act"}
+  .chartwrap{min-height:220px;flex:none;height:220px}
+}
+@media (max-width:560px){
+  .grid{grid-template-columns:1fr;grid-template-areas:"food" "waist" "avg" "body" "chart" "tdee" "act"}
+  .stamp{display:none}
+}
+
+/* Eingabe-Dialog mit eigenem Ziffernblock (keine Bildschirmtastatur im WebView) */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;align-items:center;justify-content:center;z-index:60}
+.overlay.show{display:flex}
+.pinbox{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;
+  display:flex;flex-direction:column;gap:12px;width:min(320px,92vw);max-height:96dvh;overflow-y:auto}
+.pintitle{font-weight:600;font-size:14px;text-align:center}
+.pindisplay{background:var(--card2);border:1px solid var(--line);border-radius:9px;color:var(--txt);
+  min-height:50px;display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}
+.pindisplay.empty{color:var(--dim);font-weight:400}
+.pindisplay.pin{letter-spacing:12px}
+.pinpad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.pinpad button{background:var(--card2);border:1px solid var(--line);border-radius:11px;color:var(--txt);
+  font-size:22px;font-weight:600;padding:14px 0;cursor:pointer;user-select:none;-webkit-user-select:none;
+  -webkit-tap-highlight-color:transparent}
+.pinpad button:active{background:var(--line)}
+.pinpad button.ok{background:rgba(61,220,132,.12);border-color:rgba(61,220,132,.5);color:var(--ok)}
+.pinpad button.del{font-size:20px}
+.dlgrow{display:flex;gap:8px}
+.toggle{background:var(--card2);border:1px solid var(--line);border-radius:9px;color:var(--dim);
+  padding:8px;font-size:13px;cursor:pointer;white-space:nowrap;flex:1;-webkit-tap-highlight-color:transparent}
+.toggle.on{color:var(--txt);border-color:rgba(199,146,234,.6);background:rgba(199,146,234,.1)}
+.toggle.save{color:var(--ok);border-color:rgba(61,220,132,.5);background:rgba(61,220,132,.1);font-weight:600}
+.dlgerr{color:var(--err);font-size:12px;text-align:center;min-height:15px}
+@media (max-height:640px){ .pinpad button{padding:9px 0;font-size:19px} .pinbox{padding:12px;gap:8px} }
+
+/* Toast (alert() wird im IPSView-WebView verschluckt) */
+#toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:70;
+  background:#3a1518;border:1px solid var(--err);color:#ffd7d7;padding:9px 18px;
+  border-radius:10px;font-size:14px;font-weight:600;opacity:0;pointer-events:none;
+  transition:opacity .3s;max-width:90vw}
+#toast.ok{background:#12321f;border-color:var(--ok);color:#c9f5db}
+#toast.show{opacity:1}
+footer{color:var(--dim);font-size:10px;text-align:center;flex:none}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="title">HealthHub <small id="goalShort">Rekomposition</small></div>
+    <div class="badges" id="badges"></div>
+    <div class="stamp" id="stamp">–</div>
+  </header>
+
+  <div class="grid">
+    <!-- Ernährung heute -->
+    <div class="tile t-food"><h3><span class="ico">🍽️</span>Heute<span class="tag" id="foodTag">–</span></h3>
+      <div class="hero"><span id="dKcal">–</span> <small>/ <span id="tKcal">–</span> kcal</small></div>
+      <div class="bar kcal"><i id="bKcal"></i></div>
+      <div class="barlbl"><span>Protein</span><span><b id="dProt">–</b> / <span id="tProt">–</span> g</span></div>
+      <div class="bar prot"><i id="bProt"></i></div>
+      <div class="kv"><span class="k">Fett</span><span class="v"><span id="dFat">–</span> <span class="sub">/ <span id="tFat">–</span> g</span></span></div>
+      <div class="kv"><span class="k">Kohlenhydrate</span><span class="v" id="dCarbs">–</span></div>
+    </div>
+
+    <!-- Ø 7 Tage -->
+    <div class="tile t-avg"><h3><span class="ico">📊</span>Ø 7 Tage<span class="tag" id="avgTag">–</span></h3>
+      <div class="hero"><span id="aKcal">–</span> <small>kcal / Tag</small></div>
+      <div class="bar kcal"><i id="baKcal"></i></div>
+      <div class="barlbl"><span>Protein</span><span><b id="aProt">–</b> / <span id="tProt2">–</span> g</span></div>
+      <div class="bar prot"><i id="baProt"></i></div>
+      <div class="kv"><span class="k">Fett</span><span class="v" id="aFat">–</span></div>
+      <div class="kv"><span class="k">Kohlenhydrate</span><span class="v" id="aCarbs">–</span></div>
+    </div>
+
+    <!-- Körper -->
+    <div class="tile t-body"><h3><span class="ico">⚖️</span>Körper<span class="tag" id="bodyTag">–</span></h3>
+      <div class="hero"><span id="wVal">–</span> <small>kg</small></div>
+      <div class="kv"><span class="k">Gewicht</span><span class="v" id="wChg">–</span></div>
+      <div class="kv"><span class="k">Körperfett</span><span class="v"><span id="bfVal">–</span> <span id="bfChg" class="sub"></span></span></div>
+      <div class="kv"><span class="k">Magere Masse</span><span class="v"><span id="lmVal">–</span> <span id="lmChg" class="sub"></span></span></div>
+      <div class="kv"><span class="k">Wägungen (7 T.)</span><span class="v" id="weighIns">–</span></div>
+    </div>
+
+    <!-- Bauchumfang -->
+    <div class="tile t-waist"><h3><span class="ico">📏</span>Bauchumfang<span class="tag" id="waistTag">–</span></h3>
+      <div class="hero"><span id="waVal">–</span> <small>cm</small></div>
+      <div class="kv"><span class="k">Veränderung</span><span class="v" id="waChg">–</span></div>
+      <div class="sub" id="waHint">Wöchentlich morgens nüchtern auf Nabelhöhe messen.</div>
+      <button class="btn" id="waistBtn">Bauchumfang eintragen</button>
+    </div>
+
+    <!-- Verlauf -->
+    <div class="tile t-chart">
+      <div class="charthead"><h3><span class="ico">📈</span>Verlauf 60 Tage</h3>
+        <div class="nav" id="chartNav">
+          <button data-c="weight">Gewicht</button><button data-c="waist">Bauch</button><button data-c="kcal">Kalorien</button><button data-c="protein">Protein</button>
+        </div>
+      </div>
+      <div class="chartwrap" id="chart"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <!-- Energiebilanz -->
+    <div class="tile t-tdee"><h3><span class="ico">🔥</span>Energiebilanz</h3>
+      <div class="hero"><span id="tdee">–</span> <small id="tdeeUnc">kcal Umsatz</small></div>
+      <div class="kv"><span class="k">Ø gegessen</span><span class="v" id="tdIn">–</span></div>
+      <div class="kv"><span class="k">Ø Defizit</span><span class="v" id="tdDef">–</span></div>
+      <div class="kv"><span class="k">Tempo</span><span class="v" id="tdRate">–</span></div>
+      <div class="kv"><span class="k">Ziel</span><span class="v" id="tdGoal">–</span></div>
+      <div class="sub" id="tdNote">Schätzung aus Gewichtsverlauf und FDDB</div>
+    </div>
+
+    <!-- Aktivität & Schlaf -->
+    <div class="tile t-act"><h3><span class="ico">🚶</span>Aktivität &amp; Schlaf</h3>
+      <div class="hero"><span id="steps">–</span> <small>Schritte heute</small></div>
+      <div class="kv"><span class="k">Ø Schritte (7 T.)</span><span class="v" id="aSteps">–</span></div>
+      <div class="kv"><span class="k">Schlaf letzte Nacht</span><span class="v" id="sleep">–</span></div>
+      <div class="kv"><span class="k">Ø Schlaf (7 T.)</span><span class="v" id="aSleep">–</span></div>
+      <div class="kv"><span class="k">Ruhepuls</span><span class="v"><span id="rhr">–</span> <span class="sub">Ø <span id="aRhr">–</span></span></span></div>
+    </div>
+  </div>
+  <footer id="footinfo">HealthHub</footer>
+</div>
+
+<!-- Bauchumfang-Dialog -->
+<div class="overlay" id="waistOverlay">
+  <div class="pinbox">
+    <div class="pintitle">Bauchumfang eintragen</div>
+    <div class="dlgrow" id="dayRow"></div>
+    <div id="waistDisplay" class="pindisplay empty">– cm</div>
+    <div class="pinpad" id="waistPad">
+      <button>1</button><button>2</button><button>3</button>
+      <button>4</button><button>5</button><button>6</button>
+      <button>7</button><button>8</button><button>9</button>
+      <button data-act="comma">,</button><button>0</button><button class="del" data-act="del">⌫</button>
+    </div>
+    <div class="dlgerr" id="waistErr"></div>
+    <div class="dlgrow">
+      <button class="toggle" id="waistCancel">Abbrechen</button>
+      <button class="toggle save" id="waistSave">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- PIN-Dialog -->
+<div class="overlay" id="pinOverlay">
+  <div class="pinbox">
+    <div class="pintitle">PIN eingeben</div>
+    <div id="pinDisplay" class="pindisplay pin">&nbsp;</div>
+    <div class="pinpad" id="pinPad">
+      <button>1</button><button>2</button><button>3</button>
+      <button>4</button><button>5</button><button>6</button>
+      <button>7</button><button>8</button><button>9</button>
+      <button class="del" data-act="del">⌫</button><button>0</button><button class="ok" data-act="ok">OK</button>
+    </div>
+    <button class="toggle" id="pinCancel" style="width:100%">Abbrechen</button>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let D = null;
+let chartKind = localStorage.getItem('hh_chart') || 'weight';
+let cachedPin = sessionStorage.getItem('hh_pin') || '';
+
+/* ---------- Formatierung ---------- */
+const nf = (v, dec = 0) => v === null || v === undefined ? '–'
+  : Number(v).toLocaleString('de-DE', {minimumFractionDigits: dec, maximumFractionDigits: dec});
+const sign = (v, dec = 1) => v === null || v === undefined ? '' : (v > 0 ? '+' : v < 0 ? '−' : '±') + nf(Math.abs(v), dec);
+const dDate = s => { if (!s) return '–'; const [y, m, d] = s.split('-'); return `${d}.${m}.`; };
+const hm = min => min === null || min === undefined ? '–' : `${Math.floor(min / 60)}:${String(Math.round(min % 60)).padStart(2, '0')} h`;
+const pct = (v, t) => (v === null || !t) ? 0 : Math.max(0, Math.min(100, v / t * 100));
+function setBar(id, v, t, overIsBad) {
+  const el = $(id); el.style.width = pct(v, t) + '%';
+  el.classList.toggle('over', !!overIsBad && v !== null && t && v > t * 1.05);
+}
+function chg(el, change, dec, unit, lowerIsGood) {
+  if (change === null || change === undefined) { el.textContent = ''; el.className = 'sub'; return; }
+  el.textContent = `${sign(change, dec)}${unit}`;
+  const good = lowerIsGood ? change < 0 : change > 0;
+  el.className = Math.abs(change) < Math.pow(10, -dec) ? 'flat' : good ? 'down' : 'up';
+}
+function badge(label, on, cls) { return `<span class="badge ${on ? 'on ' + (cls || '') : ''}"><span class="dot"></span>${label}</span>`; }
+let toastTimer;
+function toast(msg, type) {
+  const t = $('toast'); t.textContent = msg; t.classList.toggle('ok', type === 'ok'); t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), type === 'ok' ? 2000 : 4000);
+}
+
+/* ---------- Laden ---------- */
+async function load() {
+  try {
+    const r = await fetch('?data=1', {cache: 'no-store'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    D = await r.json();
+    render();
+  } catch (e) { /* nächster Versuch beim nächsten Intervall */ }
+}
+
+function render() {
+  const t = D.targets || {}, day = D.day || {}, a = D.avg7 || {}, b = D.body || {}, st = D.status || {}, td = D.tdee || {};
+  const now = D.now || Date.now() / 1000;
+
+  // Kopf
+  const ingestAge = st.last_ingest ? now - st.last_ingest : null;
+  const fddbAge = st.last_fddb ? now - st.last_fddb : null;
+  $('badges').innerHTML =
+    badge('Health Connect', ingestAge !== null, ingestAge === null ? '' : ingestAge > 6 * 3600 ? 'b-warn' : '') +
+    badge('FDDB', fddbAge !== null, fddbAge === null ? '' : fddbAge > 30 * 3600 ? 'b-warn' : '') +
+    badge('Claude (MCP)', !!st.mcp_enabled);
+  const last = Math.max(st.last_ingest || 0, st.last_fddb || 0);
+  $('stamp').textContent = last ? 'Daten: ' + new Date(last * 1000).toLocaleString('de-DE', {day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'}) : '–';
+  $('stamp').classList.toggle('stale', ingestAge !== null && ingestAge > 12 * 3600);
+  if (D.goal) { $('goalShort').textContent = /rekomposition/i.test(D.goal) ? 'Rekomposition' : ''; $('footinfo').textContent = 'Ziel: ' + D.goal + ' · HealthHub ' + (D.version || ''); }
+
+  // Heute
+  $('foodTag').textContent = day.entries ? `läuft · ${day.entries} Einträge` : 'noch nichts erfasst';
+  $('dKcal').textContent = nf(day.kcal); $('tKcal').textContent = nf(t.kcal);
+  setBar('bKcal', day.kcal, t.kcal, true);
+  $('dProt').textContent = nf(day.protein_g); $('tProt').textContent = nf(t.protein_g); $('tProt2').textContent = nf(t.protein_g);
+  setBar('bProt', day.protein_g, t.protein_g);
+  $('dFat').textContent = nf(day.fat_g); $('tFat').textContent = nf(t.fat_g);
+  $('dCarbs').textContent = day.carbs_g === null ? '–' : nf(day.carbs_g) + ' g';
+
+  // Ø 7 Tage (nur abgeschlossene Tage)
+  $('avgTag').textContent = a.days ? `${a.days} Tage getrackt` : 'keine Daten';
+  $('aKcal').textContent = nf(a.kcal);
+  setBar('baKcal', a.kcal, t.kcal, true);
+  $('aProt').textContent = nf(a.protein_g);
+  setBar('baProt', a.protein_g, t.protein_g);
+  $('aFat').textContent = a.fat_g === null ? '–' : nf(a.fat_g) + ' g';
+  $('aCarbs').textContent = a.carbs_g === null ? '–' : nf(a.carbs_g) + ' g';
+
+  // Körper
+  const w = b.weight || {}, bf = b.body_fat || {}, lm = b.lean_mass || {}, wa = b.waist || {};
+  $('bodyTag').textContent = w.date ? 'Stand ' + dDate(w.date) : 'keine Messung';
+  $('wVal').textContent = nf(w.value, 1);
+  $('wChg').innerHTML = w.change === null || w.change === undefined ? '–'
+    : `<span class="${w.change < 0 ? 'down' : w.change > 0 ? 'up' : 'flat'}">${sign(w.change, 1)} kg</span> <span class="sub">seit ${dDate(w.since)}</span>`;
+  $('bfVal').textContent = bf.value === null || bf.value === undefined ? '–' : nf(bf.value, 1) + ' %';
+  chg($('bfChg'), bf.change, 1, '', true);
+  $('lmVal').textContent = lm.value === null || lm.value === undefined ? '–' : nf(lm.value, 1) + ' kg';
+  chg($('lmChg'), lm.change, 1, '', false);
+  const wi = b.weigh_ins_7d || 0;
+  $('weighIns').innerHTML = wi >= 2 ? `<span class="good">${wi}×</span>` : `<span class="meh">${wi}× – mind. 2× empfohlen</span>`;
+
+  // Bauchumfang
+  $('waistTag').textContent = wa.date ? 'Stand ' + dDate(wa.date) : 'noch kein Wert';
+  $('waVal').textContent = nf(wa.value, 1);
+  $('waChg').innerHTML = wa.change === null || wa.change === undefined ? '–'
+    : `<span class="${wa.change < 0 ? 'down' : wa.change > 0 ? 'up' : 'flat'}">${sign(wa.change, 1)} cm</span> <span class="sub">seit ${dDate(wa.since)}</span>`;
+  const waAge = wa.date ? Math.round((Date.parse(D.today) - Date.parse(wa.date)) / 86400000) : null;
+  $('waHint').innerHTML = waAge === null || waAge >= 7 ? '<span class="hint">Zeit für eine neue Messung (wöchentlich, morgens nüchtern, Nabelhöhe).</span>'
+    : `Letzte Messung vor ${waAge === 0 ? 'heute' : waAge + ' Tag' + (waAge === 1 ? '' : 'en')}.`;
+
+  // Energiebilanz
+  if (td.tdee_estimate_kcal) {
+    $('tdee').textContent = nf(td.tdee_estimate_kcal);
+    $('tdeeUnc').textContent = `± ${nf(td.uncertainty_kcal)} kcal Umsatz`;
+    $('tdIn').textContent = nf(td.avg_kcal_in) + ' kcal';
+    const def = td.tdee_estimate_kcal - td.avg_kcal_in;
+    $('tdDef').textContent = nf(def) + ' kcal';
+    const pace = t.pace_kg_week || [];
+    const rate = td.rate_kg_per_week;
+    const fast = pace.length === 2 && rate < Math.min(pace[0], pace[1]) - 0.05;
+    const slow = pace.length === 2 && rate > Math.max(pace[0], pace[1]) + 0.05;
+    $('tdRate').innerHTML = `<span class="${fast ? 'meh' : slow ? 'meh' : 'good'}">${sign(rate, 2)} kg/Woche</span>`;
+    $('tdGoal').textContent = pace.length === 2 ? `${nf(pace[0], 1)} bis ${nf(pace[1], 1)} kg/Woche` : '–';
+    $('tdNote').textContent = `${td.weeks_used} Wochen (${td.first_week.slice(5)}–${td.last_week.slice(5)})` + (fast ? ' · schneller als Ziel' : slow ? ' · langsamer als Ziel' : ' · im Zielbereich');
+  } else {
+    $('tdee').textContent = '–'; $('tdeeUnc').textContent = 'kcal Umsatz';
+    ['tdIn', 'tdDef', 'tdRate', 'tdGoal'].forEach(id => $(id).textContent = '–');
+    $('tdNote').textContent = 'Braucht ≥ 2 Wochen mit ≥ 5 FDDB-Tagen und Wägung.';
+  }
+
+  // Aktivität & Schlaf
+  $('steps').textContent = nf(day.steps);
+  $('aSteps').textContent = nf(a.steps);
+  $('sleep').textContent = hm(day.sleep_min);
+  $('aSleep').textContent = hm(a.sleep_min);
+  $('rhr').textContent = day.resting_hr === null ? '–' : nf(day.resting_hr) + ' bpm';
+  $('aRhr').textContent = nf(a.resting_hr);
+
+  drawChart();
+}
+
+/* ---------- Diagramm (in Pixeln gezeichnet, neu bei Größenänderung) ---------- */
+const CHARTS = {
+  weight:  {series: 'weight',    color: 'var(--body)',  unit: ' kg', dec: 1, type: 'line', legend: 'Gewicht (Messungen)'},
+  waist:   {series: 'waist',     color: 'var(--waist)', unit: ' cm', dec: 1, type: 'line', legend: 'Bauchumfang (Messungen)'},
+  kcal:    {series: 'kcal',      color: 'var(--kcal)',  unit: '',    dec: 0, type: 'bar', target: 'kcal', legend: 'kcal pro Tag · Linie = Ziel · heute blass (läuft)'},
+  protein: {series: 'protein_g', color: 'var(--prot)',  unit: ' g',  dec: 0, type: 'bar', target: 'protein_g', legend: 'Protein pro Tag · Linie = Ziel · heute blass (läuft)'},
+};
+function drawChart() {
+  if (!D || !D.series) return;
+  document.querySelectorAll('#chartNav button').forEach(b => b.classList.toggle('active', b.dataset.c === chartKind));
+  const cfg = CHARTS[chartKind], box = $('chart');
+  const W = box.clientWidth, H = box.clientHeight;
+  if (W < 50 || H < 50) return;
+  const days = D.series.days, vals = D.series[cfg.series] || [];
+  const target = cfg.target ? (D.targets || {})[cfg.target] : null;
+  const pts = vals.map((v, i) => v === null ? null : {i, v});
+  const real = pts.filter(p => p);
+  const L = 38, R = 8, T = 8, B = 18, cw = W - L - R, ch = H - T - B;
+  let svg = `<svg viewBox="0 0 ${W} ${H}">`;
+  if (real.length === 0) {
+    svg += `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">Noch keine Daten</text></svg>`;
+    box.innerHTML = svg; $('legend').textContent = cfg.legend; return;
+  }
+  let lo = Math.min(...real.map(p => p.v)), hi = Math.max(...real.map(p => p.v));
+  if (cfg.type === 'bar') { lo = 0; hi = Math.max(hi, target || 0) * 1.08; }
+  else { const pad = Math.max((hi - lo) * 0.15, cfg.dec ? 0.5 : 1); lo -= pad; hi += pad; }
+  const n = days.length;
+  const x = i => L + (n === 1 ? cw / 2 : i * cw / (n - 1));
+  const y = v => T + ch - (v - lo) / (hi - lo) * ch;
+  // Gitter + Achse
+  for (let k = 0; k <= 3; k++) {
+    const v = lo + (hi - lo) * k / 3, yy = y(v);
+    svg += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--line)" stroke-width="1"/>`;
+    svg += `<text x="${L - 5}" y="${yy + 3}" text-anchor="end">${nf(v, cfg.type === 'bar' ? 0 : cfg.dec)}</text>`;
+  }
+  [0, Math.floor((n - 1) / 2), n - 1].forEach(i => svg += `<text x="${x(i)}" y="${H - 4}" text-anchor="${i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'}">${dDate(days[i])}</text>`);
+  if (cfg.type === 'bar') {
+    const bw = Math.max(2, cw / n * 0.7);
+    pts.forEach(p => {
+      if (!p) return;
+      const isToday = days[p.i] === D.today;
+      const over = target && p.v > target * 1.05 && cfg.series === 'kcal';
+      svg += `<rect x="${x(p.i) - bw / 2}" y="${y(p.v)}" width="${bw}" height="${Math.max(0, y(lo) - y(p.v))}" rx="2"
+        fill="${over ? 'var(--err)' : cfg.color}" opacity="${isToday ? 0.35 : 0.85}"><title>${dDate(days[p.i])}: ${nf(p.v)}${cfg.unit}</title></rect>`;
+    });
+    if (target) svg += `<line x1="${L}" x2="${W - R}" y1="${y(target)}" y2="${y(target)}" stroke="var(--txt)" stroke-width="1.5" stroke-dasharray="5 4" opacity=".7"/>`;
+  } else {
+    if (real.length > 1) {
+      svg += `<polyline fill="none" stroke="${cfg.color}" stroke-width="1.5" opacity=".45" points="${real.map(p => x(p.i) + ',' + y(p.v)).join(' ')}"/>`;
+    }
+    // Trendgerade (lineare Regression über die Messungen) - ruhiger als einzelne Ausreißer
+    trendInfo = null;
+    if (real.length >= 3 && real[real.length - 1].i - real[0].i >= 7) {
+      const mx = real.reduce((s, p) => s + p.i, 0) / real.length, my = real.reduce((s, p) => s + p.v, 0) / real.length;
+      const sxx = real.reduce((s, p) => s + (p.i - mx) ** 2, 0);
+      const k = real.reduce((s, p) => s + (p.i - mx) * (p.v - my), 0) / sxx;
+      const i0 = real[0].i, i1 = real[real.length - 1].i;
+      svg += `<line x1="${x(i0)}" y1="${y(my + k * (i0 - mx))}" x2="${x(i1)}" y2="${y(my + k * (i1 - mx))}" stroke="var(--txt)" stroke-width="1.5" stroke-dasharray="6 4" opacity=".7"/>`;
+      trendInfo = k * 7;
+    }
+    real.forEach(p => svg += `<circle cx="${x(p.i)}" cy="${y(p.v)}" r="3.5" fill="${cfg.color}"><title>${dDate(days[p.i])}: ${nf(p.v, cfg.dec)}${cfg.unit}</title></circle>`);
+  }
+  box.innerHTML = svg + '</svg>';
+  let leg = `<span><i style="background:${cfg.color}"></i>${cfg.legend}</span>`;
+  if (cfg.type === 'line' && trendInfo !== null) {
+    leg += `<span><i style="background:var(--txt);opacity:.7"></i>Trend ${sign(trendInfo, cfg.dec === 1 ? 2 : 1)}${cfg.unit}/Woche</span>`;
+  }
+  $('legend').innerHTML = leg;
+}
+let trendInfo = null;
+$('chartNav').onclick = e => { const b = e.target.closest('button'); if (!b) return; chartKind = b.dataset.c; localStorage.setItem('hh_chart', chartKind); drawChart(); };
+if (window.ResizeObserver) new ResizeObserver(() => drawChart()).observe($('chart'));
+else window.addEventListener('resize', drawChart);
+
+/* ---------- PIN (eigener Ziffernblock, keine Systemtastatur) ---------- */
+function askPin() {
+  return new Promise(resolve => {
+    const ov = $('pinOverlay'), disp = $('pinDisplay'), pad = $('pinPad');
+    let pin = '';
+    const draw = () => { disp.textContent = pin.length ? '•'.repeat(pin.length) : ' '; };
+    draw(); ov.classList.add('show');
+    const done = v => { ov.classList.remove('show'); pad.onclick = $('pinCancel').onclick = null; resolve(v); };
+    pad.onclick = e => {
+      const b = e.target.closest('button'); if (!b) return;
+      const act = b.dataset.act;
+      if (act === 'ok') done(pin);
+      else if (act === 'del') { pin = pin.slice(0, -1); draw(); }
+      else if (b.textContent.length === 1 && pin.length < 12) { pin += b.textContent; draw(); }
+    };
+    $('pinCancel').onclick = () => done(null);
+  });
+}
+
+/* ---------- Bauchumfang-Dialog ---------- */
+let wInput = '', wDay = '';
+function shiftDay(iso, n) { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
+function openWaist() {
+  if (!D) return;
+  wInput = ''; wDay = D.today; $('waistErr').textContent = '';
+  const opts = [[D.today, 'Heute'], [shiftDay(D.today, -1), 'Gestern'], [shiftDay(D.today, -2), dDate(shiftDay(D.today, -2))]];
+  $('dayRow').innerHTML = opts.map(([d, l]) => `<button class="toggle${d === wDay ? ' on' : ''}" data-d="${d}">${l}</button>`).join('');
+  drawWaist(); $('waistOverlay').classList.add('show');
+}
+function drawWaist() {
+  const last = (D.body || {}).waist || {};
+  const disp = $('waistDisplay');
+  disp.classList.toggle('empty', wInput === '');
+  disp.textContent = wInput === '' ? (last.value ? `zuletzt ${nf(last.value, 1)} cm` : '– cm') : wInput + ' cm';
+}
+$('dayRow').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  wDay = b.dataset.d; document.querySelectorAll('#dayRow button').forEach(x => x.classList.toggle('on', x === b));
+};
+$('waistPad').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const act = b.dataset.act;
+  if (act === 'del') wInput = wInput.slice(0, -1);
+  else if (act === 'comma') { if (wInput && !wInput.includes(',')) wInput += ','; }
+  else if (/^\d$/.test(b.textContent)) {
+    const [i, f] = wInput.split(',');
+    if (f !== undefined ? f.length < 1 : i.length < 3) wInput += b.textContent;
+  }
+  $('waistErr').textContent = ''; drawWaist();
+};
+$('waistCancel').onclick = () => $('waistOverlay').classList.remove('show');
+$('waistSave').onclick = async () => {
+  const value = parseFloat(wInput.replace(',', '.'));
+  if (!(value >= 30 && value <= 250)) { $('waistErr').textContent = 'Bitte einen Wert zwischen 30 und 250 cm eingeben.'; return; }
+  let pin = '';
+  if (D.pinRequired) {
+    $('waistOverlay').classList.remove('show');
+    pin = cachedPin || await askPin();
+    if (pin === null || pin === '') return;
+  }
+  try {
+    const r = await fetch(location.pathname, {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ident: 'Waist', value, date: wDay, pin})});
+    const j = await r.json();
+    if (!j.ok) {
+      if (j.error === 'PIN') { cachedPin = ''; sessionStorage.removeItem('hh_pin'); toast('✕ Falsche PIN – nicht gespeichert'); return; }
+      throw new Error(j.error || 'Fehler');
+    }
+    if (D.pinRequired && pin) { cachedPin = pin; sessionStorage.setItem('hh_pin', pin); }
+    $('waistOverlay').classList.remove('show');
+    toast(`✓ ${nf(value, 1)} cm gespeichert`, 'ok');
+    if (chartKind !== 'waist') { chartKind = 'waist'; localStorage.setItem('hh_chart', chartKind); }
+    setTimeout(load, 800);
+  } catch (e) {
+    toast('Speichern fehlgeschlagen (' + e.message + ')');
+  }
+};
+$('waistBtn').onclick = openWaist;
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
